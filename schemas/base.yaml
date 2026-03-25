@@ -1,0 +1,45 @@
+name: base
+version: "1.0"
+description: "Minimal generic ontology for any domain"
+
+entity_types:
+  concept:
+    description: "Abstract idea or named thing"
+    color: "#4CAF50"
+  agent:
+    description: "Active entity that performs actions"
+    color: "#2196F3"
+  process:
+    description: "Dynamic activity or mechanism"
+    color: "#FF9800"
+  property:
+    description: "Measurable attribute or variable"
+    color: "#9C27B0"
+  constraint:
+    description: "Rule, law, or bound"
+    color: "#F44336"
+
+relation_types:
+  relates_to:
+    description: "General association"
+  causes:
+    description: "Causal relationship"
+  part_of:
+    description: "Compositional relationship"
+  constrains:
+    description: "Limits or bounds"
+  measures:
+    description: "Quantifies or proxies for"
+
+extraction_hints:
+  entity_signals:
+    - "is defined as"
+    - "refers to"
+    - "we model"
+    - "the concept of"
+  relation_signals:
+    - "causes"
+    - "leads to"
+    - "is part of"
+    - "affects"
+    - "depends on"

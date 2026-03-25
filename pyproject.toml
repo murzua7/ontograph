@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ontograph"
+version = "0.1.0"
+description = "Extract ontological knowledge graphs from academic papers and documents"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+    "networkx>=3.0",
+    "pyyaml>=6.0",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+pdf = ["pdfplumber>=0.10"]
+dashboard = ["streamlit>=1.28", "streamlit-agraph>=0.0.45", "plotly>=5.18"]
+llm = ["openai>=1.0"]
+dev = ["pytest>=8.0"]
+all = ["ontograph[pdf,dashboard,llm,dev]"]
+
+[project.scripts]
+ontograph = "ontograph.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]

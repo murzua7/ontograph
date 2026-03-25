@@ -1,0 +1,105 @@
+name: economics
+version: "1.0"
+description: "Ontology for macroeconomics and financial systems"
+
+entity_types:
+  agent:
+    description: "Economic actor (firm, household, bank, government, central bank)"
+    subtypes: [firm, household, bank, central_bank, government, regulator, ngo]
+    color: "#4CAF50"
+  mechanism:
+    description: "Causal process or behavioral rule (pricing, production, default, contagion)"
+    subtypes: [pricing, production, default, contagion, monetary_policy, fiscal_policy, matching]
+    color: "#2196F3"
+  state_variable:
+    description: "Observable quantity that evolves over time"
+    subtypes: [stock, flow, price, rate, index, ratio]
+    color: "#FF9800"
+  market:
+    description: "Clearing institution where supply meets demand"
+    subtypes: [goods, labour, credit, housing, bond, forex, interbank]
+    color: "#9C27B0"
+  constraint:
+    description: "Invariant, accounting identity, or regulatory bound"
+    subtypes: [accounting_identity, regulatory, budget, equilibrium, solvency]
+    color: "#F44336"
+  parameter:
+    description: "Fixed or calibrated coefficient"
+    color: "#607D8B"
+  theory:
+    description: "Named theoretical framework or model"
+    subtypes: [dsge, abm, network, bayesian, complexity]
+    color: "#795548"
+  shock:
+    description: "Exogenous disturbance or stress scenario"
+    subtypes: [demand, supply, financial, policy, geopolitical]
+    color: "#E91E63"
+
+relation_types:
+  feeds_into:
+    description: "Output of source is input to target"
+    domain: [agent, mechanism, market, state_variable]
+    range: [agent, mechanism, market, state_variable]
+  constrains:
+    description: "Source limits or bounds target"
+    domain: [constraint, parameter, regulatory]
+    range: [agent, mechanism, state_variable]
+  propagates_losses_to:
+    description: "Financial contagion channel"
+    domain: [agent, mechanism]
+    range: [agent, state_variable]
+  creates_feedback_with:
+    description: "Bidirectional causal loop (amplification or dampening)"
+    symmetric: true
+  causes:
+    description: "Directional causal claim (A causes B)"
+  measures:
+    description: "Variable measures or proxies for a concept"
+    domain: [state_variable]
+    range: [mechanism, theory, concept]
+  implements:
+    description: "Agent or mechanism implements a theory"
+    domain: [agent, mechanism]
+    range: [theory]
+  parameterized_by:
+    description: "Entity behavior depends on parameter value"
+    domain: [mechanism, agent]
+    range: [parameter]
+  clears:
+    description: "Market clears transactions between agents"
+    domain: [market]
+    range: [agent]
+  triggers:
+    description: "Shock triggers a mechanism or state change"
+    domain: [shock]
+    range: [mechanism, state_variable, agent]
+  amplifies:
+    description: "Source amplifies the effect of target"
+  dampens:
+    description: "Source reduces the effect of target"
+
+extraction_hints:
+  entity_signals:
+    - "we model X as"
+    - "the X agent"
+    - "the X sector"
+    - "X is defined as"
+    - "X variable"
+    - "the X mechanism"
+    - "the X market"
+    - "X constraint"
+    - "X identity"
+    - "X parameter"
+    - "X shock"
+  relation_signals:
+    - "X affects Y"
+    - "X feeds into Y"
+    - "X causes Y"
+    - "X is constrained by Y"
+    - "X propagates to Y"
+    - "X leads to Y"
+    - "X amplifies Y"
+    - "X dampens Y"
+    - "X clears Y"
+    - "X triggers Y"
+    - "X depends on Y"
