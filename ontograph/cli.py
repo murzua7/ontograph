@@ -13,13 +13,21 @@ from rich.table import Table
 console = Console()
 
 
+def _make_llm_client(args):
+    """Build LLM client from CLI args."""
+    from ontograph.llm_client import LLMClient
+    return LLMClient(
+        mode=getattr(args, "llm_backend", "anthropic"),
+        model=getattr(args, "llm_model", None),
+    )
+
+
 def cmd_ingest(args):
     """Ingest a document and extract a knowledge graph."""
     from ontograph.parsers import parse_document
     from ontograph.schema import load_schema
     from ontograph.extractor import extract_from_document
     from ontograph.graph import OntologyGraph
-    from ontograph.export import export_json
 
     schema = load_schema(args.schema)
     path = Path(args.input)
@@ -29,7 +37,8 @@ def cmd_ingest(args):
     else:
         files = [path]
 
-    console.print(f"[bold]ontograph[/bold] | schema={schema.name} | {len(files)} file(s)")
+    mode_label = f"llm ({args.llm_backend})" if args.llm else "heuristic"
+    console.print(f"[bold]ontograph[/bold] | schema={schema.name} | mode={mode_label} | {len(files)} file(s)")
 
     graph = OntologyGraph(schema=schema)
 
@@ -38,12 +47,9 @@ def cmd_ingest(args):
         doc = parse_document(f)
 
         if args.llm:
-            try:
-                from ontograph.llm_extractor import llm_extract_from_document
-                entities, relations = llm_extract_from_document(doc, schema)
-            except ImportError:
-                console.print("  [yellow]LLM extractor not available, falling back to heuristic[/yellow]")
-                entities, relations = extract_from_document(doc, schema)
+            from ontograph.llm_extractor import llm_extract_from_document
+            client = _make_llm_client(args)
+            entities, relations = llm_extract_from_document(doc, schema, client=client)
         else:
             entities, relations = extract_from_document(doc, schema)
 
@@ -61,18 +67,32 @@ def cmd_ingest(args):
     output.write_text(kg.to_json(), encoding="utf-8")
     console.print(f"\n[green]Graph saved to {output}[/green]")
 
-    # Summary
-    summary = graph.summary()
-    table = Table(title="Extraction Summary")
-    table.add_column("Metric")
-    table.add_column("Value", justify="right")
-    table.add_row("Entities", str(summary["n_entities"]))
-    table.add_row("Relations", str(summary["n_relations"]))
-    table.add_row("Cycles", str(summary["n_cycles"]))
-    table.add_row("Components", str(summary["n_components"]))
-    for etype, count in summary["entity_types"].items():
-        table.add_row(f"  {etype}", str(count))
-    console.print(table)
+    _print_summary(graph)
+
+
+def cmd_merge(args):
+    """Merge multiple knowledge graphs with entity resolution."""
+    from ontograph.models import KnowledgeGraph
+    from ontograph.graph import OntologyGraph
+    from ontograph.resolver import merge_knowledge_graphs
+
+    graphs = []
+    for path in args.inputs:
+        kg = KnowledgeGraph.from_json(Path(path).read_text(encoding="utf-8"))
+        graphs.append(kg)
+        console.print(f"  Loaded: {path} ({len(kg.entities)} entities, {len(kg.relations)} relations)")
+
+    merged = merge_knowledge_graphs(graphs, threshold=args.threshold)
+    graph = OntologyGraph.from_kg(merged)
+
+    total_before = sum(len(g.entities) for g in graphs)
+    console.print(f"\n  Entities before: {total_before} -> after: {len(merged.entities)} (resolved {total_before - len(merged.entities)})")
+
+    output = Path(args.output)
+    output.write_text(merged.to_json(), encoding="utf-8")
+    console.print(f"[green]Merged graph saved to {output}[/green]")
+
+    _print_summary(graph)
 
 
 def cmd_analyze(args):
@@ -138,6 +158,22 @@ def cmd_serve(args):
     subprocess.run(["streamlit", "run", str(app_path), "--server.port", str(args.port)])
 
 
+def _print_summary(graph):
+    summary = graph.summary()
+    table = Table(title="Extraction Summary")
+    table.add_column("Metric")
+    table.add_column("Value", justify="right")
+    table.add_row("Entities", str(summary["n_entities"]))
+    table.add_row("Relations", str(summary["n_relations"]))
+    table.add_row("Cycles", str(summary["n_cycles"]))
+    table.add_row("Components", str(summary["n_components"]))
+    for etype, count in summary["entity_types"].items():
+        table.add_row(f"  {etype}", str(count))
+    for rtype, count in summary.get("relation_types", {}).items():
+        table.add_row(f"  [{rtype}]", str(count))
+    console.print(table)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="ontograph",
@@ -150,7 +186,18 @@ def main():
     p_ingest.add_argument("input", help="Document or directory path")
     p_ingest.add_argument("--schema", default="base", help="Ontology schema name or path")
     p_ingest.add_argument("--output", "-o", default="graph.json", help="Output JSON path")
-    p_ingest.add_argument("--llm", action="store_true", help="Use LLM extraction (requires llm_extractor)")
+    p_ingest.add_argument("--llm", action="store_true", help="Use LLM extraction")
+    p_ingest.add_argument("--llm-backend", default="anthropic",
+                          choices=["anthropic", "openai", "ollama"],
+                          help="LLM backend (default: anthropic)")
+    p_ingest.add_argument("--llm-model", default=None, help="Override model name")
+
+    # merge
+    p_merge = sub.add_parser("merge", help="Merge multiple knowledge graphs")
+    p_merge.add_argument("inputs", nargs="+", help="Graph JSON paths to merge")
+    p_merge.add_argument("--output", "-o", default="merged.json", help="Output path")
+    p_merge.add_argument("--threshold", type=float, default=0.85,
+                         help="Fuzzy matching threshold (0-1, default: 0.85)")
 
     # analyze
     p_analyze = sub.add_parser("analyze", help="Analyze a knowledge graph")
@@ -171,14 +218,15 @@ def main():
     p_serve.add_argument("--port", type=int, default=8501)
 
     args = parser.parse_args()
-    if args.command == "ingest":
-        cmd_ingest(args)
-    elif args.command == "analyze":
-        cmd_analyze(args)
-    elif args.command == "export":
-        cmd_export(args)
-    elif args.command == "serve":
-        cmd_serve(args)
+    commands = {
+        "ingest": cmd_ingest,
+        "merge": cmd_merge,
+        "analyze": cmd_analyze,
+        "export": cmd_export,
+        "serve": cmd_serve,
+    }
+    if args.command in commands:
+        commands[args.command](args)
     else:
         parser.print_help()
 
