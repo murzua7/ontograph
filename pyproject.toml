@@ -14,6 +14,9 @@ dependencies = [
     "beautifulsoup4>=4.12",
     "lxml>=5.0",
     "rich>=13.0",
+    "streamlit>=1.55.0",
+    "streamlit-agraph>=0.0.45",
+    "plotly>=6.6.0",
 ]
 
 [project.optional-dependencies]

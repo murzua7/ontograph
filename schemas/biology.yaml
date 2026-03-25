@@ -1,0 +1,87 @@
+name: biology
+version: "1.0"
+description: "Ontology for molecular biology, genetics, and systems biology"
+
+entity_types:
+  molecule:
+    description: "Chemical entity (protein, DNA, RNA, metabolite, drug)"
+    subtypes: [protein, dna, rna, metabolite, drug, lipid, enzyme, receptor]
+    color: "#4CAF50"
+  cell:
+    description: "Cell type or cellular structure"
+    subtypes: [neuron, immune_cell, stem_cell, epithelial, organelle]
+    color: "#2196F3"
+  process:
+    description: "Biological process or pathway"
+    subtypes: [signaling, transcription, translation, metabolism, apoptosis, differentiation]
+    color: "#FF9800"
+  gene:
+    description: "Gene or genomic locus"
+    color: "#9C27B0"
+  organism:
+    description: "Species or model organism"
+    subtypes: [human, mouse, yeast, bacteria, virus]
+    color: "#795548"
+  disease:
+    description: "Pathological condition"
+    subtypes: [cancer, neurological, metabolic, infectious, autoimmune]
+    color: "#F44336"
+  phenotype:
+    description: "Observable trait or measurement"
+    color: "#607D8B"
+  technique:
+    description: "Experimental method or technology"
+    subtypes: [sequencing, microscopy, assay, computational, crispr]
+    color: "#00BCD4"
+
+relation_types:
+  encodes:
+    description: "Gene encodes protein/RNA"
+    domain: [gene]
+    range: [molecule]
+  regulates:
+    description: "Regulatory interaction (activation or inhibition)"
+  activates:
+    description: "Positive regulation"
+  inhibits:
+    description: "Negative regulation"
+  binds_to:
+    description: "Physical binding interaction"
+    domain: [molecule]
+    range: [molecule, cell]
+  causes:
+    description: "Causal relationship"
+  part_of:
+    description: "Component or subunit relationship"
+  expressed_in:
+    description: "Gene/protein expressed in cell/tissue"
+    domain: [gene, molecule]
+    range: [cell, organism]
+  associated_with:
+    description: "Statistical or functional association"
+  treats:
+    description: "Drug treats disease"
+    domain: [molecule]
+    range: [disease]
+  measures:
+    description: "Technique measures phenotype"
+    domain: [technique]
+    range: [phenotype, molecule]
+
+extraction_hints:
+  entity_signals:
+    - "the protein X"
+    - "gene X"
+    - "X receptor"
+    - "X pathway"
+    - "X enzyme"
+    - "X is expressed"
+    - "X mutation"
+  relation_signals:
+    - "X activates Y"
+    - "X inhibits Y"
+    - "X binds to Y"
+    - "X regulates Y"
+    - "X encodes Y"
+    - "X is associated with Y"
+    - "X causes Y"

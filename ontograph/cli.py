@@ -151,6 +151,19 @@ def cmd_export(args):
     console.print(f"[green]Exported to {output}[/green]")
 
 
+def cmd_mcp_sync(args):
+    """Sync a knowledge graph to MCP memory."""
+    from ontograph.models import KnowledgeGraph
+    from ontograph.graph import OntologyGraph
+    from ontograph.mcp_bridge import export_to_mcp
+
+    kg = KnowledgeGraph.from_json(Path(args.input).read_text(encoding="utf-8"))
+    graph = OntologyGraph.from_kg(kg)
+
+    n = export_to_mcp(graph, prefix=args.prefix, append=not args.overwrite)
+    console.print(f"[green]Synced {n} records to MCP memory (prefix={args.prefix})[/green]")
+
+
 def cmd_serve(args):
     """Launch the Streamlit dashboard."""
     import subprocess
@@ -213,6 +226,12 @@ def main():
     p_export.add_argument("--format", "-f", choices=["graphml", "mermaid", "jsonld"], required=True)
     p_export.add_argument("--output", "-o", help="Output path")
 
+    # mcp-sync
+    p_mcp = sub.add_parser("mcp-sync", help="Sync graph to MCP memory")
+    p_mcp.add_argument("input", help="Graph JSON path")
+    p_mcp.add_argument("--prefix", default="ontograph", help="Namespace prefix")
+    p_mcp.add_argument("--overwrite", action="store_true", help="Overwrite instead of append")
+
     # serve
     p_serve = sub.add_parser("serve", help="Launch Streamlit dashboard")
     p_serve.add_argument("--port", type=int, default=8501)
@@ -223,6 +242,7 @@ def main():
         "merge": cmd_merge,
         "analyze": cmd_analyze,
         "export": cmd_export,
+        "mcp-sync": cmd_mcp_sync,
         "serve": cmd_serve,
     }
     if args.command in commands:

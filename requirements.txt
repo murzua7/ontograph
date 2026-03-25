@@ -1,0 +1,8 @@
+networkx>=3.0
+pyyaml>=6.0
+beautifulsoup4>=4.12
+lxml>=5.0
+rich>=13.0
+streamlit>=1.28
+streamlit-agraph>=0.0.45
+plotly>=5.18

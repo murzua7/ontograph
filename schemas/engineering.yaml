@@ -1,0 +1,89 @@
+name: engineering
+version: "1.0"
+description: "Ontology for engineering systems, control theory, and design"
+
+entity_types:
+  component:
+    description: "Physical or logical system component"
+    subtypes: [sensor, actuator, controller, processor, memory, network, battery]
+    color: "#4CAF50"
+  system:
+    description: "Engineered system or subsystem"
+    subtypes: [mechanical, electrical, software, thermal, fluid, control]
+    color: "#2196F3"
+  signal:
+    description: "Input, output, or internal signal"
+    subtypes: [voltage, current, force, temperature, pressure, data]
+    color: "#FF9800"
+  property:
+    description: "Measurable system property"
+    subtypes: [reliability, latency, throughput, efficiency, stability]
+    color: "#9C27B0"
+  requirement:
+    description: "Design constraint or specification"
+    subtypes: [functional, performance, safety, regulatory]
+    color: "#F44336"
+  failure_mode:
+    description: "Way in which a component or system can fail"
+    subtypes: [wear, overload, fatigue, corrosion, software_bug]
+    color: "#E91E63"
+  material:
+    description: "Physical material or substance"
+    color: "#607D8B"
+  standard:
+    description: "Industry standard or specification"
+    color: "#795548"
+
+relation_types:
+  contains:
+    description: "System contains component"
+    domain: [system]
+    range: [component, system]
+  connects_to:
+    description: "Physical or logical connection"
+  sends_signal:
+    description: "Signal flow from source to target"
+    domain: [component, system]
+    range: [component, system]
+  constrains:
+    description: "Requirement constrains design"
+    domain: [requirement, standard]
+    range: [component, system, property]
+  causes_failure:
+    description: "Failure mode causes system failure"
+    domain: [failure_mode]
+    range: [component, system]
+  measures:
+    description: "Sensor measures property"
+    domain: [component]
+    range: [property, signal]
+  controls:
+    description: "Controller controls actuator/system"
+    domain: [component, system]
+    range: [component, system]
+  made_of:
+    description: "Component made of material"
+    domain: [component]
+    range: [material]
+  complies_with:
+    description: "System complies with standard"
+    domain: [system, component]
+    range: [standard, requirement]
+
+extraction_hints:
+  entity_signals:
+    - "the X system"
+    - "X component"
+    - "X sensor"
+    - "X controller"
+    - "X signal"
+    - "X requirement"
+    - "failure of X"
+  relation_signals:
+    - "X connects to Y"
+    - "X controls Y"
+    - "X measures Y"
+    - "X contains Y"
+    - "X constrains Y"
+    - "X causes Y"
+    - "X sends signal to Y"

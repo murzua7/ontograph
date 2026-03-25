@@ -1029,8 +1029,11 @@ dependencies = [
     { name = "lxml" },
     { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "plotly" },
     { name = "pyyaml" },
     { name = "rich" },
+    { name = "streamlit" },
+    { name = "streamlit-agraph" },
 ]
 
 [package.optional-dependencies]
@@ -1070,11 +1073,14 @@ requires-dist = [
     { name = "ontograph", extras = ["pdf", "dashboard", "llm", "dev"], marker = "extra == 'all'" },
     { name = "openai", marker = "extra == 'llm'", specifier = ">=1.0" },
     { name = "pdfplumber", marker = "extra == 'pdf'", specifier = ">=0.10" },
+    { name = "plotly", specifier = ">=6.6.0" },
     { name = "plotly", marker = "extra == 'dashboard'", specifier = ">=5.18" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", specifier = ">=13.0" },
+    { name = "streamlit", specifier = ">=1.55.0" },
     { name = "streamlit", marker = "extra == 'dashboard'", specifier = ">=1.28" },
+    { name = "streamlit-agraph", specifier = ">=0.0.45" },
     { name = "streamlit-agraph", marker = "extra == 'dashboard'", specifier = ">=0.0.45" },
 ]
 provides-extras = ["pdf", "dashboard", "llm", "dev", "all"]
