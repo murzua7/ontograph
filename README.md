@@ -10,6 +10,11 @@ Papers (PDF/MD/HTML)  -->  Entity Extraction  -->  Knowledge Graph  -->  Dashboa
                         Ontology Schema          Cycles, centrality,
                         (economics, biology,     cascade depth,
                          engineering, custom)     export to GraphML/Mermaid/JSON-LD
+                                                       |
+                                                 Causal Graph Layer
+                                                 (evidence scoring,
+                                                  cascade simulation,
+                                                  regime conditioning)
 ```
 
 ---
@@ -141,6 +146,41 @@ Five tabs:
 | Mermaid | Embed in Markdown/docs | `ontograph export graph.json -f mermaid` |
 | JSON-LD | Linked data / semantic web | `ontograph export graph.json -f jsonld` |
 
+### Causal Graph Layer
+
+Extract **causal claims** from documents, score their evidence quality, and simulate cascading consequences of shocks through known transmission channels.
+
+```bash
+# Extract causal claims from a paper
+uv run ontograph causal ingest paper.pdf --llm-backend anthropic -o causal_graph.json
+
+# Or build manually
+uv run ontograph causal add \
+  --source "Oil Price" --target "Inflation" \
+  --mechanism energy_cost_passthrough \
+  --evidence-type institutional_mechanism \
+  --direction positive --assertiveness strong
+
+uv run ontograph causal add \
+  --source "Inflation" --target "Policy Rate" \
+  --mechanism mandate_response \
+  --evidence-type institutional_mechanism \
+  --direction positive --assertiveness definitional
+```
+
+**Evidence taxonomy** -- 18 macro-appropriate evidence types scored from `accounting_identity` (1.00) to `narrative` (0.15). Includes `institutional_mechanism`, `natural_experiment`, `historical_precedent`, `market_implied`, and more.
+
+**Confidence scoring** -- Composite score from five dimensions: evidence quality (0.30), external validity (0.25), mechanism specificity (0.20), evidence diversity (0.15), and claim assertiveness (0.10). Temporal precedence is a hard gate, not a weight.
+
+**Cascade simulation** -- Given a shock, propagate effects through causal channels:
+- Max-confidence priority traversal (strongest paths first)
+- Direction sign algebra (positive x negative = negative)
+- Regime-conditional edge gating (edges active only under specific macro conditions)
+- Sign conflict detection (flags when channels disagree)
+- Time-stepped feedback mode for macro feedback loops
+
+Stored as `causal_graph.json`, separate from the knowledge graph but referencing the same entity names.
+
 ### MCP Memory Bridge
 
 Sync extracted knowledge into Claude Code's memory for conversational querying:
@@ -157,18 +197,22 @@ Then in Claude Code: *"What feeds into bank default in my thesis graph?"*
 
 ```
 ontograph/
-  models.py          # Entity, Relation, KnowledgeGraph, Provenance dataclasses
-  schema.py          # YAML ontology loader + validation
-  parsers/           # Markdown, HTML (BeautifulSoup), PDF (pdfplumber)
-  extractor.py       # Heuristic extraction (regex patterns)
-  llm_client.py      # Multi-backend LLM (Anthropic, OpenAI, Ollama, mock)
-  llm_extractor.py   # Two-pass LLM extraction with schema grounding
-  resolver.py        # Entity resolution (exact + alias + fuzzy)
-  graph.py           # NetworkX wrapper with analysis methods
-  export.py          # JSON, GraphML, Mermaid, JSON-LD exporters
-  mcp_bridge.py      # Claude Code MCP memory sync
-  dashboard/app.py   # Streamlit interactive visualization
-  cli.py             # CLI: ingest, merge, analyze, export, mcp-sync, serve
+  models.py            # Entity, Relation, KnowledgeGraph, Provenance dataclasses
+  schema.py            # YAML ontology loader + validation
+  parsers/             # Markdown, HTML (BeautifulSoup), PDF (pdfplumber)
+  extractor.py         # Heuristic extraction (regex patterns)
+  llm_client.py        # Multi-backend LLM (Anthropic, OpenAI, Ollama, mock)
+  llm_extractor.py     # Two-pass LLM extraction with schema grounding
+  resolver.py          # Entity resolution (exact + alias + fuzzy)
+  graph.py             # NetworkX wrapper with analysis methods
+  export.py            # JSON, GraphML, Mermaid, JSON-LD, Canvas exporters
+  mcp_bridge.py        # Claude Code MCP memory sync
+  dashboard/app.py     # Streamlit interactive visualization
+  causal_models.py     # CausalClaim, CausalGraph, evidence taxonomy
+  causal_scoring.py    # Composite confidence scoring + temporal gate
+  causal_extractor.py  # LLM-powered causal claim extraction
+  causal_engine.py     # Cascade simulation engine (priority traversal, feedback)
+  cli.py               # CLI: ingest, merge, analyze, export, causal, mcp-sync, serve
 schemas/
   economics.yaml     # 8 entity types, 12 relation types
   biology.yaml       # 8 entity types, 11 relation types
@@ -184,7 +228,11 @@ schemas/
 ontograph ingest <file_or_dir> --schema <name> [--llm] [--llm-backend anthropic|openai|ollama] [-o graph.json]
 ontograph merge <g1.json> <g2.json> ... [-o merged.json] [--threshold 0.85]
 ontograph analyze <graph.json> [--cycles] [--centrality] [--cascade-depth] [--all]
-ontograph export <graph.json> -f graphml|mermaid|jsonld [-o output]
+ontograph export <graph.json> -f graphml|mermaid|jsonld|canvas [-o output]
+ontograph extract <graph.json> --root <entity> --depth 2 [-o subgraph.json]
+ontograph view <graph.json> [--no-open]
+ontograph causal ingest <file_or_dir> [--llm-backend anthropic|openai|ollama] [-o causal_graph.json]
+ontograph causal add --source <entity> --target <entity> --mechanism <name> [--evidence-type narrative] [--direction positive] [--assertiveness moderate]
 ontograph mcp-sync <graph.json> [--prefix ontograph] [--overwrite]
 ontograph serve [--port 8501]
 ```
