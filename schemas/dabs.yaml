@@ -1,0 +1,179 @@
+name: dabs
+version: "0.2"
+description: "DABS (Differentiable Agent-Based macro-financial Simulator) ontology. Extends `economics` with DABS-specific phase/operator/bug-fix/data-source types, plus edge-semantic defaults for discipline-v1."
+extends: economics
+
+# ---------------------------------------------------------------------------
+# Entity types — child entries replace parent entries of the same name.
+# Inherited as-is: market, shock.
+# ---------------------------------------------------------------------------
+entity_types:
+  # -- Override parents to widen subtypes ---------------------------------
+  agent:
+    description: "Economic actor (firm, household, bank, government, central bank)"
+    subtypes: [firm, household, bank, central_bank, government, regulator, ngo, multi_bank, rest_of_world]
+    color: "#4CAF50"
+  mechanism:
+    description: "Causal process, behavioural rule, or code-level operator. Includes simulator phases, learned operators, smooth relaxations, optimisers, accounting operators."
+    subtypes: [pricing, production, default, contagion, monetary_policy, fiscal_policy, matching, phase, learned_operator, smooth_operator, optimizer, training_regime, accounting_operator]
+    color: "#2196F3"
+  state_variable:
+    description: "Observable quantity that evolves over time"
+    subtypes: [stock, flow, price, rate, index, ratio, embedding]
+    color: "#FF9800"
+  constraint:
+    description: "Invariant, accounting identity, regulatory bound, or run-time assertion"
+    subtypes: [accounting_identity, regulatory, budget, equilibrium, solvency, assertion]
+    color: "#F44336"
+  parameter:
+    description: "Fixed or calibrated coefficient (adapter output, warm-up, regularisation)"
+    subtypes: [calibrated, structural, regime, adapter_output, warmup, regularisation]
+    color: "#607D8B"
+  theory:
+    description: "Named theoretical framework or model"
+    subtypes: [dsge, abm, network, bayesian, complexity, sfc]
+    color: "#795548"
+
+  # -- DABS-specific additions -------------------------------------------
+  data_source:
+    description: "Empirical data provider used to calibrate or benchmark DABS (BIS, ECB, FRED, INSEE, ORBIS, WID, Eurostat, IMF, OECD)"
+    subtypes: [regulator, statistical_agency, commercial_vendor, research_archive]
+    color: "#00ACC1"
+  bug_fix:
+    description: "Historical correction to a mechanism; records a code-change event tied to a known pathology (phantom-bias, inventory residual, consumption scale)"
+    color: "#8BC34A"
+  phase:
+    description: "Ordered step of the DABS _step() pipeline; composes sub-mechanisms and operators. (Also expressible as mechanism.subtype=phase; promoted to top-level for convenience.)"
+    color: "#3F51B5"
+
+# ---------------------------------------------------------------------------
+# Relation types — child entries replace parent entries of the same name.
+# Inherited as-is: propagates_losses_to, creates_feedback_with, causes, implements,
+#                  parameterized_by, clears, triggers, amplifies, dampens.
+# ---------------------------------------------------------------------------
+relation_types:
+  # -- Overrides to widen domain/range with DABS-specific types ---------
+  feeds_into:
+    description: "Output of source is input to target"
+    domain: [agent, mechanism, market, state_variable, phase]
+    range: [agent, mechanism, market, state_variable, phase]
+    default_edge_class: mechanism
+    default_lag: within_step
+  constrains:
+    description: "Source limits or bounds target"
+    domain: [constraint, parameter]
+    range: [agent, mechanism, state_variable]
+    default_edge_class: structural
+    default_sign: "0"
+  measures:
+    description: "Variable measures or proxies for a concept"
+    domain: [state_variable]
+    range: [mechanism, theory]
+    default_edge_class: identity
+    default_form: identity
+
+  # -- DABS-specific additions -------------------------------------------
+  relaxes:
+    description: "Smooth operator provides a differentiable relaxation of a discrete mechanism (e.g. smooth_relu relaxes max(0,·))"
+    domain: [mechanism]
+    range: [mechanism]
+    default_edge_class: structural
+    default_form: monotone
+  asserts:
+    description: "Run-time invariant check on a state, identity, or balance sheet"
+    domain: [constraint]
+    range: [state_variable, constraint, mechanism]
+    default_edge_class: identity
+  implements_as:
+    description: "Concrete code-level realisation of a named theory (stronger than `implements`; includes module/function binding)"
+    domain: [theory]
+    range: [mechanism, agent]
+    default_edge_class: identity
+  supersedes:
+    description: "Historical correction: bug_fix replaces a previous version of a mechanism"
+    domain: [bug_fix]
+    range: [mechanism]
+    default_edge_class: structural
+  applied_during:
+    description: "Sub-mechanism consumed inside a phase during _step()"
+    domain: [mechanism]
+    range: [phase, mechanism]
+    default_edge_class: structural
+    default_lag: within_step
+  executes_after:
+    description: "Phase ordering in the _step() pipeline"
+    domain: [phase]
+    range: [phase]
+    default_edge_class: structural
+    default_lag: within_step
+  sourced_from:
+    description: "Empirical provenance — parameter or state is calibrated/benchmarked from a named data source"
+    domain: [parameter, state_variable]
+    range: [data_source]
+    default_edge_class: parameter
+  embeds:
+    description: "Learned operator produces an embedding consumed by downstream mechanisms (e.g. InitialAdapter → regime embedding)"
+    domain: [mechanism]
+    range: [mechanism, state_variable]
+    default_edge_class: mechanism
+    default_lag: within_step
+  distils_into:
+    description: "Teacher model distils a trained policy/operator into a student operator"
+    domain: [mechanism]
+    range: [mechanism]
+    default_edge_class: structural
+
+# ---------------------------------------------------------------------------
+# DABS-specific extraction hints — merged with economics hints on load.
+# ---------------------------------------------------------------------------
+extraction_hints:
+  entity_signals:
+    - "phase N:"
+    - "_phase_"
+    - "the X adapter"
+    - "the X operator"
+    - "smooth_"
+    - "STE-"
+    - "BUG-"
+    - "dead-wired channel"
+    - "forcing router"
+    - "learned operator"
+    - "calibrated to"
+    - "sourced from"
+    - "regime embedding"
+    - "_assert_"
+  relation_signals:
+    - "X is the smooth relaxation of Y"
+    - "X supersedes Y"
+    - "X (BUG-N) corrected Y"
+    - "X is applied during Y"
+    - "phase X executes before Y"
+    - "X is sourced from Y"
+    - "X embeds Y"
+    - "X distils Y into Z"
+    - "X asserts Y"
+
+# ---------------------------------------------------------------------------
+# Validation policy used by the quality gate (discipline-v1).
+# ---------------------------------------------------------------------------
+validation:
+  # Non-abstract entities of these types must carry a CodeAnchor or CitationAnchor.
+  require_grounding_for:
+    - mechanism
+    - phase
+    - parameter
+    - bug_fix
+    - constraint
+  # Entities of these types are allowed to be abstract (no code anchor required).
+  allow_abstract:
+    - theory
+    - concept
+  # Cycle policy: within_step cycles are a red flag (phase DAG); across_step cycles
+  # are expected (feedback loops). The quality gate enforces these per-edge.
+  cycle_policy:
+    within_step: forbid
+    across_step: allow
+  # Edge-signedness target for the quality gate.
+  signedness_target: 0.7
+  coverage_target: 0.85
+  groundedness_target: 0.8
