@@ -271,3 +271,67 @@ class TestDabsExtendsEquivalence:
         for st in ("phase", "learned_operator", "smooth_operator",
                    "optimizer", "training_regime", "accounting_operator"):
             assert st in mech.subtypes, f"dabs mechanism.subtypes missing '{st}'"
+
+
+# ── Phase C enablement: extraction_hints preserves arbitrary keys ──
+
+class TestExtractionHintsPreservation:
+    """Loader must not whitelist `extraction_hints` sub-keys.
+
+    Phase C (AST extractor) puts its pattern grammar under `extraction_hints.ast_patterns`
+    as a list of dicts. A 2-key whitelist (entity_signals, relation_signals) would drop it
+    silently — exactly the failure mode `feedback_spec_architectural_claims_verified_against_code`
+    warns against."""
+
+    def test_ast_patterns_key_preserved(self, tmp_path):
+        from ontograph.schema import load_schema
+        p = tmp_path / "hinted.yaml"
+        p.write_text(yaml.safe_dump({
+            "name": "hinted",
+            "entity_types": {"phase": {"description": "p"}},
+            "extraction_hints": {
+                "ast_patterns": [
+                    {"pattern": "def _phase_*", "entity_type": "phase"},
+                    {"pattern": "class * (nn.Module)", "entity_type": "learned_operator"},
+                ],
+            },
+        }))
+        s = load_schema(str(p))
+        assert "ast_patterns" in s.extraction_hints
+        patterns = s.extraction_hints["ast_patterns"]
+        assert len(patterns) == 2
+        assert patterns[0]["pattern"] == "def _phase_*"
+        assert patterns[0]["entity_type"] == "phase"
+        assert patterns[1]["pattern"] == "class * (nn.Module)"
+
+    def test_canonical_hint_keys_default_to_empty_list(self, tmp_path):
+        """Even when a schema only declares `ast_patterns`, the canonical keys
+        `entity_signals` and `relation_signals` exist as empty lists so callers
+        can index them without guarding."""
+        from ontograph.schema import load_schema
+        p = tmp_path / "only_ast.yaml"
+        p.write_text(yaml.safe_dump({
+            "name": "only_ast",
+            "extraction_hints": {
+                "ast_patterns": [{"pattern": "def foo", "entity_type": "mechanism"}],
+            },
+        }))
+        s = load_schema(str(p))
+        assert s.extraction_hints["entity_signals"] == []
+        assert s.extraction_hints["relation_signals"] == []
+        assert s.extraction_hints["ast_patterns"][0]["entity_type"] == "mechanism"
+
+    def test_arbitrary_hint_keys_preserved(self, tmp_path):
+        """Future hint kinds (e.g. `llm_prompts`, `regex_patterns`) pass through untouched."""
+        from ontograph.schema import load_schema
+        p = tmp_path / "custom.yaml"
+        p.write_text(yaml.safe_dump({
+            "name": "custom",
+            "extraction_hints": {
+                "entity_signals": ["phase N:"],
+                "custom_kind": ["alpha", "beta"],
+            },
+        }))
+        s = load_schema(str(p))
+        assert s.extraction_hints["entity_signals"] == ["phase N:"]
+        assert s.extraction_hints["custom_kind"] == ["alpha", "beta"]

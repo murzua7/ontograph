@@ -40,7 +40,7 @@ class OntologySchema:
     description: str = ""
     entity_types: dict[str, EntityTypeDef] = field(default_factory=dict)
     relation_types: dict[str, RelationTypeDef] = field(default_factory=dict)
-    extraction_hints: dict[str, list[str]] = field(default_factory=dict)
+    extraction_hints: dict[str, Any] = field(default_factory=dict)
     validation: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -184,9 +184,8 @@ def load_schema(name_or_path: str) -> OntologySchema:
         )
 
     hints = raw.get("extraction_hints") or {}
-    schema.extraction_hints = {
-        "entity_signals": list(hints.get("entity_signals", []) or []),
-        "relation_signals": list(hints.get("relation_signals", []) or []),
-    }
+    schema.extraction_hints = {k: list(v or []) for k, v in hints.items()}
+    schema.extraction_hints.setdefault("entity_signals", [])
+    schema.extraction_hints.setdefault("relation_signals", [])
 
     return schema
