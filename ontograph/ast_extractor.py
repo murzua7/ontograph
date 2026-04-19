@@ -40,6 +40,7 @@ class _ParsedPattern:
     name_glob: str                  # glob against symbol name
     base_glob: str | None = None    # glob against first base, class-with-base only
     entity_type: str = ""
+    subtype: str | None = None      # optional spec §4.1.1 subtype tag
 
 
 _FUNC_RE = re.compile(r"^def\s+(\S+)\s*$")
@@ -48,20 +49,20 @@ _CLASS_RE = re.compile(r"^class\s+(\S+)\s*$")
 _ASSIGN_RE = re.compile(r"^(\S+)\s*=\s*$")
 
 
-def _parse_pattern(raw: str, entity_type: str) -> _ParsedPattern | None:
+def _parse_pattern(raw: str, entity_type: str, subtype: str | None = None) -> _ParsedPattern | None:
     s = raw.strip()
     m = _FUNC_RE.match(s)
     if m:
-        return _ParsedPattern("func", m.group(1), None, entity_type)
+        return _ParsedPattern("func", m.group(1), None, entity_type, subtype)
     m = _CLASS_BASE_RE.match(s)
     if m:
-        return _ParsedPattern("class", m.group(1), m.group(2), entity_type)
+        return _ParsedPattern("class", m.group(1), m.group(2), entity_type, subtype)
     m = _CLASS_RE.match(s)
     if m:
-        return _ParsedPattern("class", m.group(1), None, entity_type)
+        return _ParsedPattern("class", m.group(1), None, entity_type, subtype)
     m = _ASSIGN_RE.match(s)
     if m:
-        return _ParsedPattern("assign", m.group(1), None, entity_type)
+        return _ParsedPattern("assign", m.group(1), None, entity_type, subtype)
     return None
 
 
@@ -75,7 +76,9 @@ def _compile_patterns(schema: OntologySchema) -> list[_ParsedPattern]:
         etype = item.get("entity_type")
         if not pat or not etype:
             continue
-        parsed = _parse_pattern(str(pat), str(etype))
+        subtype_raw = item.get("subtype")
+        subtype = str(subtype_raw) if subtype_raw else None
+        parsed = _parse_pattern(str(pat), str(etype), subtype)
         if parsed is not None:
             out.append(parsed)
     return out
@@ -164,14 +167,19 @@ def _make_entity(
     repo_root: Path,
     file_path: Path,
     line: int,
+    subtype: str | None = None,
 ) -> Entity:
     rel_posix = file_path.relative_to(repo_root).as_posix()
     anchor = CodeAnchor(repo=repo_root.name, path=rel_posix, line=line, symbol=name)
+    metadata: dict[str, object] = {}
+    if subtype:
+        metadata["subtype"] = subtype
     return Entity(
         name=name,
         entity_type=entity_type,
         code_anchors=[anchor],
         abstract=False,
+        metadata=metadata,
     )
 
 
@@ -205,12 +213,12 @@ def extract_from_repo(
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 for p in _match_functiondef(node, patterns):
-                    entities.append(_make_entity(node.name, p.entity_type, repo_root, py, node.lineno))
+                    entities.append(_make_entity(node.name, p.entity_type, repo_root, py, node.lineno, p.subtype))
             elif isinstance(node, ast.ClassDef):
                 for p in _match_classdef(node, patterns):
-                    entities.append(_make_entity(node.name, p.entity_type, repo_root, py, node.lineno))
+                    entities.append(_make_entity(node.name, p.entity_type, repo_root, py, node.lineno, p.subtype))
             elif isinstance(node, ast.Assign):
                 for p, sym in _match_assign(node, patterns):
-                    entities.append(_make_entity(sym, p.entity_type, repo_root, py, node.lineno))
+                    entities.append(_make_entity(sym, p.entity_type, repo_root, py, node.lineno, p.subtype))
 
     return entities, []

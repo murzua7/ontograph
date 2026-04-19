@@ -393,3 +393,58 @@ class TestSyntaxErrorTolerance:
         })
         entities, _ = extract_from_repo(repo, schema)
         assert {e.name for e in entities} == {"_phase_a"}
+
+
+# ── 10. Subtype tag (spec §4.1.1 preservation) ─────────────────────────
+
+class TestSubtypePreservation:
+    """ast_patterns may attach a `subtype` field — written to Entity.metadata
+    so downstream Phase D quality gates can apply per-subtype policies without
+    re-parsing the pattern source."""
+
+    def test_learned_operator_subtype_recorded(self, tmp_path):
+        from ontograph.ast_extractor import extract_from_repo
+        from ontograph.schema import load_schema
+        schema = load_schema(str(_write_schema_with_patterns(tmp_path, [
+            {"pattern": "class *(nn.Module)", "entity_type": "mechanism",
+             "subtype": "learned_operator"},
+        ])))
+        repo = _make_repo(tmp_path, {
+            "ops.py": "class Adapter(nn.Module):\n    pass\n",
+        })
+        entities, _ = extract_from_repo(repo, schema)
+        assert len(entities) == 1
+        assert entities[0].entity_type == "mechanism"
+        assert entities[0].metadata.get("subtype") == "learned_operator"
+
+    def test_assertion_and_smooth_subtypes(self, tmp_path):
+        from ontograph.ast_extractor import extract_from_repo
+        from ontograph.schema import load_schema
+        schema = load_schema(str(_write_schema_with_patterns(tmp_path, [
+            {"pattern": "def _assert_*", "entity_type": "constraint",
+             "subtype": "assertion"},
+            {"pattern": "smooth_* =", "entity_type": "mechanism",
+             "subtype": "smooth_operator"},
+        ])))
+        repo = _make_repo(tmp_path, {
+            "m.py": (
+                "def _assert_balance(state):\n    pass\n"
+                "\n"
+                "smooth_relu = lambda x: x\n"
+            ),
+        })
+        entities, _ = extract_from_repo(repo, schema)
+        by_name = {e.name: e for e in entities}
+        assert by_name["_assert_balance"].metadata.get("subtype") == "assertion"
+        assert by_name["smooth_relu"].metadata.get("subtype") == "smooth_operator"
+
+    def test_no_subtype_leaves_metadata_empty(self, tmp_path):
+        from ontograph.ast_extractor import extract_from_repo
+        from ontograph.schema import load_schema
+        schema = load_schema(str(_write_schema_with_patterns(tmp_path, [
+            {"pattern": "def _phase_*", "entity_type": "phase"},
+        ])))
+        repo = _make_repo(tmp_path, {"sim.py": "def _phase_a(): pass\n"})
+        entities, _ = extract_from_repo(repo, schema)
+        assert len(entities) == 1
+        assert "subtype" not in entities[0].metadata

@@ -161,10 +161,13 @@ extraction_hints:
       entity_type: phase
     - pattern: "def _assert_*"
       entity_type: constraint
+      subtype: assertion
     - pattern: "class *(nn.Module)"
       entity_type: mechanism
+      subtype: learned_operator
     - pattern: "smooth_* ="
       entity_type: mechanism
+      subtype: smooth_operator
 
 # ---------------------------------------------------------------------------
 # Validation policy used by the quality gate (discipline-v1).
