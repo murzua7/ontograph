@@ -152,6 +152,19 @@ extraction_hints:
     - "X embeds Y"
     - "X distils Y into Z"
     - "X asserts Y"
+  # AST-pattern hints consumed by ontograph/ast_extractor.py (Phase C).
+  # Grammar: `def NAME`, `class NAME`, `class NAME(BASE)`, `NAME =`; NAME/BASE
+  # are fnmatch globs (case-sensitive). Entities emerge grounded by CodeAnchor;
+  # relations come from Phase D merge, not here.
+  ast_patterns:
+    - pattern: "def _phase_*"
+      entity_type: phase
+    - pattern: "def _assert_*"
+      entity_type: constraint
+    - pattern: "class *(nn.Module)"
+      entity_type: mechanism
+    - pattern: "smooth_* ="
+      entity_type: mechanism
 
 # ---------------------------------------------------------------------------
 # Validation policy used by the quality gate (discipline-v1).
