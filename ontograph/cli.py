@@ -531,6 +531,123 @@ def cmd_causal_add(args):
     console.print(f"  Saved to {output} ({len(cg.claims)} total claims)")
 
 
+def _cross_check_llm_extract(doc_path, schema, *, client=None):
+    """Run the LLM extractor over a single document and return (entities, relations).
+
+    Separated from cmd_cross_check so tests can monkeypatch this seam
+    without standing up a real LLM backend.
+    """
+    from ontograph.llm_extractor import llm_extract_from_document
+    from ontograph.parsers import parse_document
+
+    doc = parse_document(Path(doc_path))
+    return llm_extract_from_document(doc, schema, client=client)
+
+
+def cmd_quality(args) -> int:
+    """Run the quality gate on a knowledge graph.
+
+    Returns an exit code: 0 on pass (or --allow-gate-failure), 1 on fail.
+    Also writes a JSON report alongside the input graph (or to --output).
+    """
+    from ontograph.ast_extractor import extract_from_repo
+    from ontograph.models import KnowledgeGraph
+    from ontograph.quality import compute_quality_report
+    from ontograph.schema import load_schema
+
+    schema = load_schema(args.schema)
+    kg_path = Path(args.input)
+    kg = KnowledgeGraph.from_json(kg_path.read_text(encoding="utf-8"))
+
+    ast_entities = None
+    if getattr(args, "ast_repo", None):
+        ast_ents, _ = extract_from_repo(Path(args.ast_repo), schema)
+        ast_entities = ast_ents
+
+    report = compute_quality_report(kg, schema, ast_entities=ast_entities)
+
+    out_path = Path(args.output) if getattr(args, "output", None) else kg_path.with_suffix(".quality.json")
+    out_path.write_text(report.to_json(), encoding="utf-8")
+
+    # Console table for at-a-glance reading.
+    table = Table(title="Quality Gate")
+    table.add_column("Metric")
+    table.add_column("Value", justify="right")
+    table.add_column("Status")
+
+    def _fmt_ratio(r):
+        return "n/a" if r is None else f"{r:.3f}"
+
+    def _status(metric: str) -> str:
+        hits = [f for f in report.failures if metric in f.lower()]
+        return "[red]FAIL[/red]" if hits else "[green]pass[/green]"
+
+    table.add_row("coverage",     _fmt_ratio(report.coverage["ratio"]),     _status("coverage"))
+    table.add_row("groundedness", _fmt_ratio(report.groundedness["ratio"]), _status("groundedness"))
+    table.add_row("signedness",   _fmt_ratio(report.signedness["ratio"]),   _status("signedness"))
+    table.add_row("orphan_rate",  _fmt_ratio(report.orphan_rate["ratio"]),  "—")
+    table.add_row("consistency",  _fmt_ratio(report.consistency["ratio"]),  "—")
+    table.add_row("cycles (within)", str(report.cycle_count["within_step"]), _status("cycle-within_step"))
+    table.add_row("cycles (across)", str(report.cycle_count["across_step"]), _status("cycle-across_step"))
+    console.print(table)
+    console.print(f"Report → {out_path}")
+
+    if not report.gates_passed and not getattr(args, "allow_gate_failure", False):
+        for f in report.failures:
+            console.print(f"  [red]·[/red] {f}")
+        return 1
+    if not report.gates_passed:
+        console.print("[yellow]gates failed (--allow-gate-failure)[/yellow]")
+    return 0
+
+
+def cmd_cross_check(args) -> int:
+    """Dual-extract (LLM + AST) and emit agreement-gated KG + merge report."""
+    from ontograph.ast_extractor import extract_from_repo
+    from ontograph.merge import merge_extractions
+    from ontograph.schema import load_schema
+
+    schema = load_schema(args.schema)
+
+    client = _make_llm_client(args)
+    llm_entities, llm_relations = _cross_check_llm_extract(
+        args.input, schema, client=client,
+    )
+    console.print(f"  LLM: {len(llm_entities)} entities, {len(llm_relations)} relations")
+
+    ast_entities, ast_relations = extract_from_repo(Path(args.ast_repo), schema)
+    console.print(f"  AST: {len(ast_entities)} entities, {len(ast_relations)} relations")
+
+    kg, report = merge_extractions(
+        llm_entities, llm_relations,
+        ast_entities, ast_relations,
+    )
+
+    out_kg = Path(args.output)
+    out_kg.write_text(kg.to_json(), encoding="utf-8")
+    console.print(f"[green]Agreement KG → {out_kg}[/green] "
+                  f"({len(kg.entities)} entities, {len(kg.relations)} relations)")
+
+    out_report = Path(args.report) if getattr(args, "report", None) else out_kg.with_suffix(".merge_report.json")
+    out_report.write_text(report.to_json(), encoding="utf-8")
+
+    # Bucket sizes summary.
+    table = Table(title="Merge Buckets")
+    table.add_column("Bucket")
+    table.add_column("Count", justify="right")
+    table.add_row("agreement entities", str(len(report.agreement_entities)))
+    table.add_row("llm-only entities",  str(len(report.llm_only_entities)))
+    table.add_row("ast-only entities",  str(len(report.ast_only_entities)))
+    table.add_row("agreement relations", str(len(report.agreement_relations)))
+    table.add_row("llm-only relations",  str(len(report.llm_only_relations)))
+    table.add_row("ast-only relations",  str(len(report.ast_only_relations)))
+    table.add_row("sign conflicts",      str(len(report.sign_conflicts)))
+    console.print(table)
+    console.print(f"Report → {out_report}")
+
+    return 0
+
+
 def _print_causal_summary(cg):
     from ontograph.causal_models import CausalGraph
     table = Table(title="Causal Graph Summary")
@@ -639,6 +756,31 @@ def main():
     p_extract.add_argument("--depth", "-d", type=int, default=2, help="Hop depth (default: 2)")
     p_extract.add_argument("--output", "-o", default="subgraph.json", help="Output JSON path")
 
+    # quality (Phase D gate)
+    p_quality = sub.add_parser("quality", help="Run the discipline-v1 quality gate on a KG")
+    p_quality.add_argument("input", help="Graph JSON path")
+    p_quality.add_argument("--schema", default="base", help="Schema name or YAML path")
+    p_quality.add_argument("--ast-repo", default=None,
+                           help="Repository root to AST-extract for coverage metric")
+    p_quality.add_argument("--output", "-o", default=None,
+                           help="Report JSON path (default: <input>.quality.json)")
+    p_quality.add_argument("--allow-gate-failure", action="store_true",
+                           help="Exit 0 even if gates fail (report still written)")
+
+    # cross-check (Phase D LLM × AST agreement set)
+    p_xcheck = sub.add_parser("cross-check",
+                              help="Dual-extract LLM+AST and emit agreement-gated KG + report")
+    p_xcheck.add_argument("input", help="Document or directory path (prose input for LLM)")
+    p_xcheck.add_argument("--ast-repo", required=True, help="Repository root for AST extraction")
+    p_xcheck.add_argument("--schema", default="base", help="Schema name or YAML path")
+    p_xcheck.add_argument("--output", "-o", default="agreement.json",
+                          help="Agreement KG JSON path")
+    p_xcheck.add_argument("--report", default=None,
+                          help="Merge report JSON path (default: <output>.merge_report.json)")
+    p_xcheck.add_argument("--llm-backend", default="anthropic",
+                          choices=["anthropic", "openai", "ollama", "claude-code"])
+    p_xcheck.add_argument("--llm-model", default=None)
+
     # serve
     p_serve = sub.add_parser("serve", help="Launch Streamlit dashboard")
     p_serve.add_argument("--port", type=int, default=8501)
@@ -684,6 +826,8 @@ def main():
         "view": cmd_view,
         "mcp-sync": cmd_mcp_sync,
         "serve": cmd_serve,
+        "quality": cmd_quality,
+        "cross-check": cmd_cross_check,
     }
 
     if args.command == "causal":
@@ -696,7 +840,9 @@ def main():
         else:
             p_causal.print_help()
     elif args.command in commands:
-        commands[args.command](args)
+        rc = commands[args.command](args)
+        if isinstance(rc, int) and rc != 0:
+            sys.exit(rc)
     else:
         parser.print_help()
 
