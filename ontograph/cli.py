@@ -862,6 +862,57 @@ def cmd_diff(args) -> int:
     return 0
 
 
+def cmd_falsify(args) -> int:
+    """Simulator-in-the-loop falsification (spec §4.3).
+
+    Loads a KG, imports a `SimulatorAdapter` by dotted path
+    (`module.path:ClassName`), runs `falsify()`, and writes a JSON
+    report. Returns non-zero on adapter-resolution failure.
+    """
+    import importlib
+
+    from ontograph.falsify import falsify
+    from ontograph.models import KnowledgeGraph
+
+    try:
+        module_path, _, class_name = args.simulator.partition(":")
+        if not module_path or not class_name:
+            raise ValueError(
+                f"--simulator must be 'module.path:ClassName'; got {args.simulator!r}"
+            )
+        module = importlib.import_module(module_path)
+        adapter_cls = getattr(module, class_name)
+        adapter = adapter_cls()
+    except (ImportError, AttributeError, ValueError, TypeError) as exc:
+        console.print(f"[red]failed to load simulator adapter: {exc}[/red]")
+        return 1
+
+    kg_path = Path(args.kg)
+    kg = KnowledgeGraph.from_json(kg_path.read_text(encoding="utf-8"))
+
+    subset = getattr(args, "subset", None) or "mechanism"
+    try:
+        report = falsify(kg, adapter, subset=subset)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        return 1
+
+    report_path = Path(args.report) if getattr(args, "report", None) else kg_path.with_suffix(".falsify.json")
+    report_path.write_text(report.to_json(), encoding="utf-8")
+
+    table = Table(title="Falsify Buckets")
+    table.add_column("Bucket")
+    table.add_column("Count", justify="right")
+    table.add_row("confirmed", str(len(report.confirmed)))
+    table.add_row("flipped",   str(len(report.flipped)))
+    table.add_row("unknown",   str(len(report.unknown)))
+    table.add_row("examined",  str(report.examined))
+    table.add_row("total",     str(report.total))
+    console.print(table)
+    console.print(f"Report → {report_path}")
+    return 0
+
+
 def _print_causal_summary(cg):
     from ontograph.causal_models import CausalGraph
     table = Table(title="Causal Graph Summary")
@@ -1008,6 +1059,17 @@ def main():
     p_diff.add_argument("--new", required=True, help="Current KG JSON path")
     p_diff.add_argument("--report", required=True, help="Output markdown path")
 
+    # falsify (Phase E simulator-in-the-loop falsifier)
+    p_falsify = sub.add_parser("falsify",
+                               help="Run a KG against a SimulatorAdapter and bucket edges")
+    p_falsify.add_argument("--kg", required=True, help="Input KG JSON path")
+    p_falsify.add_argument("--simulator", required=True, metavar="MODULE:CLASS",
+                           help="Dotted path to a SimulatorAdapter class (e.g. dabs_adapter:DabsAdapter)")
+    p_falsify.add_argument("--subset", default="mechanism", choices=["mechanism", "all"],
+                           help="Edge subset to falsify (default: mechanism)")
+    p_falsify.add_argument("--report", default=None,
+                           help="Report JSON path (default: <kg>.falsify.json)")
+
     # cross-check (Phase D LLM × AST agreement set)
     p_xcheck = sub.add_parser("cross-check",
                               help="Dual-extract LLM+AST and emit agreement-gated KG + report")
@@ -1071,6 +1133,7 @@ def main():
         "cross-check": cmd_cross_check,
         "ground": cmd_ground,
         "diff": cmd_diff,
+        "falsify": cmd_falsify,
     }
 
     if args.command == "causal":
