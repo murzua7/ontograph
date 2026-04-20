@@ -86,6 +86,10 @@ class LLMClient:
             self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
             self.model = model or "claude-sonnet-4-20250514"
             self.base_url = None
+        elif mode == "claude-code":
+            self.model = model  # None → let `claude` CLI use its configured default
+            self.base_url = None
+            self.api_key = ""
         elif mode == "mock":
             self.model = "mock"
             self.base_url = None
@@ -102,6 +106,8 @@ class LLMClient:
         """Send a chat completion request."""
         if self.mode == "mock":
             return self._mock_chat()
+        elif self.mode == "claude-code":
+            return self._claude_code_chat(messages, temperature)
         elif self.mode == "anthropic":
             return self._anthropic_chat(messages, temperature)
         else:
@@ -119,6 +125,52 @@ class LLMClient:
         else:
             content = '{"entities": [], "relations": []}'
         return LLMResponse(content=content, model="mock")
+
+    def _claude_code_chat(self, messages: list[dict[str, str]], temperature: float) -> LLMResponse:
+        """Use Claude Code CLI in print mode — uses Max subscription, no API credits."""
+        import subprocess
+        import sys
+
+        # Combine system + user messages into a single prompt
+        prompt_parts = []
+        for m in messages:
+            if m["role"] == "system":
+                prompt_parts.append(m["content"])
+            else:
+                prompt_parts.append(m["content"])
+        prompt = "\n\n".join(prompt_parts)
+
+        cmd = ["claude", "-p", "--output-format", "text",
+               "--dangerously-skip-permissions"]
+        if self.model:
+            cmd.extend(["--model", self.model])
+
+        try:
+            # Pass bytes explicitly so Windows never wraps stdin in a
+            # cp1252 TextIOWrapper — `text=True` + `encoding="utf-8"`
+            # does not reliably propagate on Python 3.13/Windows when
+            # the prompt contains arrows, bullets, or minus signs.
+            result = subprocess.run(
+                cmd,
+                input=prompt.encode("utf-8"),
+                capture_output=True,
+                timeout=120,
+            )
+            content = result.stdout.decode("utf-8", errors="replace").strip()
+            if result.returncode != 0:
+                stderr_text = result.stderr.decode("utf-8", errors="replace")
+                print(f"    [claude-code] stderr: {stderr_text[:200]}", file=sys.stderr)
+                content = '{"entities": [], "relations": []}'
+            elif not content:
+                content = '{"entities": [], "relations": []}'
+        except subprocess.TimeoutExpired:
+            print("    [claude-code] timeout", file=sys.stderr)
+            content = '{"entities": [], "relations": []}'
+        except FileNotFoundError:
+            print("    [claude-code] 'claude' CLI not found", file=sys.stderr)
+            content = '{"entities": [], "relations": []}'
+
+        return LLMResponse(content=content, model=f"claude-code/{self.model or 'default'}")
 
     def _anthropic_chat(self, messages: list[dict[str, str]], temperature: float) -> LLMResponse:
         try:
