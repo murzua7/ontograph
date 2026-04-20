@@ -1,7 +1,12 @@
 """Phase D — CLI wiring tests (TDD).
 
-Covers `ontograph quality` (runs gate + emits report) and `ontograph
-cross-check` (dual-extract LLM+AST, merge, emit KG + merge report).
+Covers the five Phase-D CLI verbs / extensions:
+
+    * `ontograph quality`        — run gate + emit report on an existing KG
+    * `ontograph cross-check`    — dual-extract LLM+AST, merge, emit KG + report
+    * `ontograph ingest` extras  — --ast-repo / --dual-extract / --quality-report
+    * `ontograph ground`         — post-hoc grounding pass (add anchors)
+    * `ontograph diff`           — compare two KGs as markdown
 
 LLM calls are stubbed so these tests stay offline and deterministic.
 """
@@ -196,3 +201,299 @@ class TestCmdCrossCheck:
         payload = json.loads(out_report.read_text(encoding="utf-8"))
         names = {e["name"] for e in payload["agreement_entities"]}
         assert "_phase_one" in names
+
+
+# ── 3. `ontograph ingest` extensions ───────────────────────────────────
+
+def _ingest_args(**overrides):
+    """Build the Namespace cmd_ingest expects; defaults to heuristic mode.
+
+    Every attribute cmd_ingest reads via getattr is supplied so tests don't
+    collide with `Namespace`'s AttributeError-on-missing behaviour.
+    """
+    base = dict(
+        input="",
+        schema="base",
+        output="graph.json",
+        llm=False,
+        llm_backend="anthropic",
+        llm_model=None,
+        batch_out=None,
+        batch_in=None,
+        schema_free=False,
+        save_schema=None,
+        ast_repo=None,
+        dual_extract=False,
+        quality_report=None,
+    )
+    base.update(overrides)
+    return Namespace(**base)
+
+
+class TestCmdIngestAstRepo:
+    def test_ast_repo_adds_grounding_to_heuristic_extraction(self, tmp_path):
+        """--ast-repo runs the AST extractor and unions grounded entities into the KG."""
+        from ontograph.cli import cmd_ingest
+
+        schema_p = _write_schema(tmp_path)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "sim.py").write_text(
+            "def _phase_alpha():\n    pass\n",
+            encoding="utf-8",
+        )
+        doc = tmp_path / "doc.md"
+        doc.write_text("# Doc\n\nNothing extractable here.\n", encoding="utf-8")
+
+        out_kg = tmp_path / "kg.json"
+        args = _ingest_args(
+            input=str(doc),
+            schema=str(schema_p),
+            output=str(out_kg),
+            ast_repo=str(repo),
+        )
+        cmd_ingest(args)
+
+        assert out_kg.exists()
+        payload = json.loads(out_kg.read_text(encoding="utf-8"))
+        # `entities` is a dict keyed by name in the KG JSON schema.
+        assert "_phase_alpha" in payload["entities"]
+
+    def test_quality_report_written_alongside_kg(self, tmp_path):
+        """--quality-report emits the six-metric JSON next to the KG."""
+        from ontograph.cli import cmd_ingest
+
+        schema_p = _write_schema(tmp_path, validation={"groundedness_target": 0.0})
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "sim.py").write_text("def _phase_alpha():\n    pass\n", encoding="utf-8")
+        doc = tmp_path / "doc.md"
+        doc.write_text("# Doc\n", encoding="utf-8")
+
+        out_kg = tmp_path / "kg.json"
+        out_report = tmp_path / "kg.quality.json"
+        args = _ingest_args(
+            input=str(doc),
+            schema=str(schema_p),
+            output=str(out_kg),
+            ast_repo=str(repo),
+            quality_report=str(out_report),
+        )
+        cmd_ingest(args)
+
+        assert out_report.exists()
+        payload = json.loads(out_report.read_text(encoding="utf-8"))
+        assert "groundedness" in payload
+        assert "coverage" in payload
+
+    def test_dual_extract_requires_ast_repo(self, tmp_path):
+        """--dual-extract without --ast-repo is a usage error (nonzero rc)."""
+        from ontograph.cli import cmd_ingest
+
+        schema_p = _write_schema(tmp_path)
+        doc = tmp_path / "doc.md"
+        doc.write_text("# Doc\n", encoding="utf-8")
+        args = _ingest_args(
+            input=str(doc),
+            schema=str(schema_p),
+            output=str(tmp_path / "kg.json"),
+            dual_extract=True,
+        )
+        rc = cmd_ingest(args)
+        assert rc != 0
+
+    def test_dual_extract_produces_agreement_only_kg(self, tmp_path, monkeypatch):
+        """--dual-extract runs LLM+AST, merges, writes only agreement bucket to KG."""
+        from ontograph import cli
+
+        schema_p = _write_schema(tmp_path)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "sim.py").write_text("def _phase_alpha():\n    pass\n", encoding="utf-8")
+        doc = tmp_path / "doc.md"
+        doc.write_text("# Doc\n", encoding="utf-8")
+
+        # LLM sees both `_phase_alpha` (agreement) and `lonely_concept`
+        # (llm-only). Only the agreement entity should end up in the KG.
+        def _stub_llm_extract(doc_obj, schema, *, client=None):
+            return (
+                [
+                    Entity(name="_phase_alpha", entity_type="phase"),
+                    Entity(name="lonely_concept", entity_type="phase"),
+                ],
+                [],
+            )
+        monkeypatch.setattr(cli, "_ingest_llm_extract", _stub_llm_extract, raising=False)
+
+        out_kg = tmp_path / "kg.json"
+        args = _ingest_args(
+            input=str(doc),
+            schema=str(schema_p),
+            output=str(out_kg),
+            ast_repo=str(repo),
+            dual_extract=True,
+            llm=True,
+        )
+        rc = cli.cmd_ingest(args)
+        assert rc == 0
+
+        payload = json.loads(out_kg.read_text(encoding="utf-8"))
+        assert "_phase_alpha" in payload["entities"]
+        assert "lonely_concept" not in payload["entities"]
+
+
+# ── 4. `ontograph ground` ──────────────────────────────────────────────
+
+class TestCmdGround:
+    def test_adds_code_anchor_to_ungrounded_entity(self, tmp_path):
+        """Ungrounded KG entity whose name matches an AST symbol gets anchored."""
+        from ontograph.cli import cmd_ground
+
+        schema_p = _write_schema(tmp_path)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "sim.py").write_text(
+            "def _phase_alpha():\n    pass\n", encoding="utf-8",
+        )
+        # KG entity has no anchors → not grounded
+        ungrounded = Entity(name="_phase_alpha", entity_type="phase")
+        assert not ungrounded.is_grounded()
+
+        kg_p = tmp_path / "kg.json"
+        _write_kg(kg_p, entities=[ungrounded])
+
+        out_p = tmp_path / "kg.grounded.json"
+        args = Namespace(
+            kg=str(kg_p),
+            ast_repo=str(repo),
+            citation_bib=None,
+            in_place=False,
+            output=str(out_p),
+            schema=str(schema_p),
+        )
+        rc = cmd_ground(args)
+        assert rc == 0
+        assert out_p.exists()
+        payload = json.loads(out_p.read_text(encoding="utf-8"))
+        assert "_phase_alpha" in payload["entities"]
+        anchors = payload["entities"]["_phase_alpha"]["code_anchors"]
+        assert len(anchors) >= 1
+        assert anchors[0]["symbol"] == "_phase_alpha"
+
+    def test_in_place_overwrites_input_file(self, tmp_path):
+        from ontograph.cli import cmd_ground
+
+        schema_p = _write_schema(tmp_path)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "sim.py").write_text("def _phase_alpha():\n    pass\n", encoding="utf-8")
+
+        kg_p = tmp_path / "kg.json"
+        _write_kg(kg_p, entities=[Entity(name="_phase_alpha", entity_type="phase")])
+        args = Namespace(
+            kg=str(kg_p),
+            ast_repo=str(repo),
+            citation_bib=None,
+            in_place=True,
+            output=None,
+            schema=str(schema_p),
+        )
+        cmd_ground(args)
+        payload = json.loads(kg_p.read_text(encoding="utf-8"))
+        e = payload["entities"]["_phase_alpha"]
+        assert len(e["code_anchors"]) >= 1
+
+    def test_does_not_duplicate_existing_anchors(self, tmp_path):
+        """Running ground twice is idempotent — anchor set doesn't grow."""
+        from ontograph.cli import cmd_ground
+
+        schema_p = _write_schema(tmp_path)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "sim.py").write_text("def _phase_alpha():\n    pass\n", encoding="utf-8")
+
+        kg_p = tmp_path / "kg.json"
+        _write_kg(kg_p, entities=[Entity(name="_phase_alpha", entity_type="phase")])
+        args = Namespace(
+            kg=str(kg_p),
+            ast_repo=str(repo),
+            citation_bib=None,
+            in_place=True,
+            output=None,
+            schema=str(schema_p),
+        )
+        cmd_ground(args)
+        first = json.loads(kg_p.read_text(encoding="utf-8"))
+        cmd_ground(args)
+        second = json.loads(kg_p.read_text(encoding="utf-8"))
+        e1 = first["entities"]["_phase_alpha"]
+        e2 = second["entities"]["_phase_alpha"]
+        assert len(e1["code_anchors"]) == len(e2["code_anchors"])
+
+
+# ── 5. `ontograph diff` ────────────────────────────────────────────────
+
+class TestCmdDiff:
+    def test_diff_reports_added_and_removed_entities(self, tmp_path):
+        from ontograph.cli import cmd_diff
+        from ontograph.models import Relation
+
+        old_p = tmp_path / "old.json"
+        new_p = tmp_path / "new.json"
+        _write_kg(old_p, entities=[
+            _ent("a", "phase", grounded=True),
+            _ent("b", "phase", grounded=True),
+        ])
+        _write_kg(new_p, entities=[
+            _ent("a", "phase", grounded=True),
+            _ent("c", "phase", grounded=True),
+        ])
+        out_p = tmp_path / "diff.md"
+        args = Namespace(old=str(old_p), new=str(new_p), report=str(out_p))
+        rc = cmd_diff(args)
+        assert rc == 0
+        md = out_p.read_text(encoding="utf-8")
+        assert "b" in md  # removed
+        assert "c" in md  # added
+        # and a marker so consumers can parse sections
+        assert "removed" in md.lower()
+        assert "added" in md.lower()
+
+    def test_diff_reports_added_relations(self, tmp_path):
+        from ontograph.cli import cmd_diff
+        from ontograph.models import Relation
+
+        old_p = tmp_path / "old.json"
+        new_p = tmp_path / "new.json"
+        _write_kg(
+            old_p,
+            entities=[_ent("a", "phase", grounded=True), _ent("b", "phase", grounded=True)],
+        )
+        _write_kg(
+            new_p,
+            entities=[_ent("a", "phase", grounded=True), _ent("b", "phase", grounded=True)],
+            relations=[Relation(
+                source="a", target="b",
+                relation_type="feeds_into",
+                edge_class="mechanism",
+            )],
+        )
+        out_p = tmp_path / "diff.md"
+        args = Namespace(old=str(old_p), new=str(new_p), report=str(out_p))
+        cmd_diff(args)
+        md = out_p.read_text(encoding="utf-8")
+        assert "a" in md and "b" in md and "feeds_into" in md
+
+    def test_diff_no_changes_emits_sentinel(self, tmp_path):
+        from ontograph.cli import cmd_diff
+
+        old_p = tmp_path / "old.json"
+        new_p = tmp_path / "new.json"
+        ents = [_ent("a", "phase", grounded=True)]
+        _write_kg(old_p, entities=ents)
+        _write_kg(new_p, entities=ents)
+        out_p = tmp_path / "diff.md"
+        args = Namespace(old=str(old_p), new=str(new_p), report=str(out_p))
+        cmd_diff(args)
+        md = out_p.read_text(encoding="utf-8").lower()
+        assert "no changes" in md or "identical" in md

@@ -255,37 +255,110 @@ def cmd_ingest(args):
         return
 
     # --- Normal mode ---
+    # --dual-extract requires --ast-repo — surface the mis-config fast.
+    if getattr(args, "dual_extract", False) and not getattr(args, "ast_repo", None):
+        console.print("[red]--dual-extract requires --ast-repo[/red]")
+        return 1
+
     mode_label = f"llm ({args.llm_backend})" if args.llm else "heuristic"
-    console.print(f"[bold]ontograph[/bold] | schema={schema.name} | mode={mode_label} | {len(files)} file(s)")
+    ast_label = " + ast" if getattr(args, "ast_repo", None) else ""
+    dual_label = " (dual-extract)" if getattr(args, "dual_extract", False) else ""
+    console.print(
+        f"[bold]ontograph[/bold] | schema={schema.name} | "
+        f"mode={mode_label}{ast_label}{dual_label} | {len(files)} file(s)"
+    )
 
-    graph = OntologyGraph(schema=schema)
-
+    # Accumulate text-side (LLM or heuristic) extractions across all files.
+    text_entities: list = []
+    text_relations: list = []
     for f in files:
         console.print(f"  Parsing: {f.name}")
         doc = parse_document(f)
 
         if args.llm:
-            from ontograph.llm_extractor import llm_extract_from_document
             client = _make_llm_client(args)
-            entities, relations = llm_extract_from_document(doc, schema, client=client)
+            entities, relations = _ingest_llm_extract(doc, schema, client=client)
         else:
             entities, relations = extract_from_document(doc, schema)
 
-        for e in entities:
-            graph.add_entity(e)
-        for r in relations:
-            graph.add_relation(r)
-
+        text_entities.extend(entities)
+        text_relations.extend(relations)
         console.print(f"    -> {len(entities)} entities, {len(relations)} relations")
 
-    # Output
+    # Optional AST-side extraction (Phase D / spec §5).
+    ast_entities: list = []
+    ast_relations: list = []
+    if getattr(args, "ast_repo", None):
+        from ontograph.ast_extractor import extract_from_repo
+        ast_entities, ast_relations = extract_from_repo(Path(args.ast_repo), schema)
+        console.print(f"  AST: {len(ast_entities)} entities, {len(ast_relations)} relations")
+
+    graph = OntologyGraph(schema=schema)
+
+    if getattr(args, "dual_extract", False):
+        # Agreement-only KG: both sides had to see the entity/relation.
+        from ontograph.merge import merge_extractions
+        merged_kg, merge_report = merge_extractions(
+            text_entities, text_relations,
+            ast_entities, ast_relations,
+        )
+        for e in merged_kg.entities.values():
+            graph.add_entity(e)
+        for r in merged_kg.relations:
+            graph.add_relation(r)
+        console.print(
+            f"  merge: agreement={len(merge_report.agreement_entities)} entities / "
+            f"{len(merge_report.agreement_relations)} relations"
+        )
+    else:
+        # Union mode — text side supplies names/semantics, AST side adds grounding.
+        for e in text_entities:
+            graph.add_entity(e)
+        for r in text_relations:
+            graph.add_relation(r)
+        for e in ast_entities:
+            graph.add_entity(e)
+        for r in ast_relations:
+            graph.add_relation(r)
+
+    # Output the KG.
     output = Path(args.output)
     kg = graph.to_kg()
     kg.documents = [str(f) for f in files]
     output.write_text(kg.to_json(), encoding="utf-8")
     console.print(f"\n[green]Graph saved to {output}[/green]")
 
+    # Optional quality report (spec §5 `--quality-report`).
+    report_flag = getattr(args, "quality_report", None)
+    if report_flag is not None or getattr(args, "ast_repo", None):
+        from ontograph.quality import compute_quality_report
+        report = compute_quality_report(
+            kg, schema,
+            ast_entities=ast_entities or None,
+        )
+        # Only persist when the flag is explicitly set; ast_repo alone just
+        # computes the six metrics for the console summary.
+        if report_flag is not None:
+            report_path = Path(report_flag)
+            report_path.write_text(report.to_json(), encoding="utf-8")
+            console.print(f"[green]Quality report saved to {report_path}[/green]")
+        if not report.gates_passed:
+            console.print("[yellow]quality gate failed[/yellow]")
+            for f in report.failures:
+                console.print(f"  [yellow]·[/yellow] {f}")
+
     _print_summary(graph)
+    return 0
+
+
+def _ingest_llm_extract(doc, schema, *, client=None):
+    """LLM-extraction seam used by `cmd_ingest` in dual-extract mode.
+
+    Kept as a module-level indirection so test suites can monkeypatch it
+    without standing up a real LLM backend.
+    """
+    from ontograph.llm_extractor import llm_extract_from_document
+    return llm_extract_from_document(doc, schema, client=client)
 
 
 def cmd_merge(args):
@@ -648,6 +721,147 @@ def cmd_cross_check(args) -> int:
     return 0
 
 
+def cmd_ground(args) -> int:
+    """Post-hoc grounding pass (spec §5).
+
+    Walks an existing KG and attaches `CodeAnchor` entries from `--ast-repo`
+    (and, optionally, `CitationAnchor` entries from `--citation-bib`) to
+    entities that currently lack grounding. Fuzzy-matches entity names to
+    AST symbols using `ontograph.merge.default_name_matcher` + 0.85 threshold
+    so the grounding predicate stays aligned with merge/coverage.
+    """
+    from ontograph.ast_extractor import extract_from_repo
+    from ontograph.merge import default_name_matcher
+    from ontograph.models import CitationAnchor, KnowledgeGraph
+    from ontograph.schema import load_schema
+
+    schema = load_schema(args.schema)
+    kg_path = Path(args.kg)
+    kg = KnowledgeGraph.from_json(kg_path.read_text(encoding="utf-8"))
+
+    ast_entities, _ = extract_from_repo(Path(args.ast_repo), schema)
+    # Group AST anchors by symbol — one AST entity may emit multiple anchors
+    # (e.g. for an overloaded name in different files).
+    ast_by_name: dict[str, list] = {}
+    for ae in ast_entities:
+        ast_by_name.setdefault(ae.name, []).extend(ae.code_anchors)
+
+    # Optional bib: accepts a simple JSON mapping of {entity_name: {"key":..., "pages":...}}
+    # or a list of `{"name":..., "key":..., "pages":...}` records. Richer .bib
+    # parsing is deferred — the JSON form covers the pilot case.
+    citation_map: dict[str, list[CitationAnchor]] = {}
+    bib_path = getattr(args, "citation_bib", None)
+    if bib_path:
+        raw = json.loads(Path(bib_path).read_text(encoding="utf-8"))
+        entries = raw if isinstance(raw, list) else [
+            {"name": n, **(v if isinstance(v, dict) else {"key": v})}
+            for n, v in raw.items()
+        ]
+        for e in entries:
+            citation_map.setdefault(e["name"], []).append(
+                CitationAnchor(key=e["key"], pages=e.get("pages", ""))
+            )
+
+    threshold = 0.85
+    code_added = 0
+    cite_added = 0
+    for ent in kg.entities.values():
+        existing_codes = {(a.repo, a.path, a.line, a.symbol) for a in ent.code_anchors}
+        # Exact match first; fall back to fuzzy if no exact hit.
+        candidates = ast_by_name.get(ent.name, [])
+        if not candidates:
+            for sym, anchors in ast_by_name.items():
+                if default_name_matcher(ent.name, sym) >= threshold:
+                    candidates = anchors
+                    break
+        for a in candidates:
+            if (a.repo, a.path, a.line, a.symbol) not in existing_codes:
+                ent.code_anchors.append(a)
+                existing_codes.add((a.repo, a.path, a.line, a.symbol))
+                code_added += 1
+
+        existing_cites = {(c.key, c.pages) for c in ent.citation_anchors}
+        for c in citation_map.get(ent.name, []):
+            if (c.key, c.pages) not in existing_cites:
+                ent.citation_anchors.append(c)
+                existing_cites.add((c.key, c.pages))
+                cite_added += 1
+
+    out_path = kg_path if getattr(args, "in_place", False) else Path(
+        getattr(args, "output", None) or kg_path.with_suffix(".grounded.json")
+    )
+    out_path.write_text(kg.to_json(), encoding="utf-8")
+    console.print(
+        f"[green]Grounded → {out_path}[/green] "
+        f"(+{code_added} code anchors, +{cite_added} citation anchors)"
+    )
+    return 0
+
+
+def cmd_diff(args) -> int:
+    """Compare two KGs and emit a markdown report of added/removed/changed (spec §5)."""
+    from ontograph.models import KnowledgeGraph
+
+    old_kg = KnowledgeGraph.from_json(Path(args.old).read_text(encoding="utf-8"))
+    new_kg = KnowledgeGraph.from_json(Path(args.new).read_text(encoding="utf-8"))
+
+    old_names = set(old_kg.entities)
+    new_names = set(new_kg.entities)
+    added_entities = sorted(new_names - old_names)
+    removed_entities = sorted(old_names - new_names)
+    kept_entities = sorted(old_names & new_names)
+
+    def _rel_key(r) -> tuple[str, str, str]:
+        return (r.source, r.target, r.relation_type)
+
+    old_rels = {_rel_key(r): r for r in old_kg.relations}
+    new_rels = {_rel_key(r): r for r in new_kg.relations}
+    added_rels = [new_rels[k] for k in sorted(new_rels.keys() - old_rels.keys())]
+    removed_rels = [old_rels[k] for k in sorted(old_rels.keys() - new_rels.keys())]
+
+    changed_type: list[tuple[str, str, str]] = []
+    for name in kept_entities:
+        o = old_kg.entities[name].entity_type
+        n = new_kg.entities[name].entity_type
+        if o != n:
+            changed_type.append((name, o, n))
+
+    lines: list[str] = []
+    lines.append(f"# KG diff: `{Path(args.old).name}` → `{Path(args.new).name}`\n")
+
+    if not (added_entities or removed_entities or added_rels or removed_rels or changed_type):
+        lines.append("_No changes — the two knowledge graphs are identical at the "
+                     "(name, entity_type) × (source, target, relation_type) level._\n")
+    else:
+        lines.append("## Entities\n")
+        lines.append(f"- added: {len(added_entities)}\n")
+        for n in added_entities:
+            lines.append(f"  - `{n}` ({new_kg.entities[n].entity_type})\n")
+        lines.append(f"- removed: {len(removed_entities)}\n")
+        for n in removed_entities:
+            lines.append(f"  - `{n}` ({old_kg.entities[n].entity_type})\n")
+        if changed_type:
+            lines.append(f"- changed type: {len(changed_type)}\n")
+            for n, o, nn in changed_type:
+                lines.append(f"  - `{n}`: {o} → {nn}\n")
+
+        lines.append("\n## Relations\n")
+        lines.append(f"- added: {len(added_rels)}\n")
+        for r in added_rels:
+            lines.append(f"  - `{r.source}` --[{r.relation_type}]--> `{r.target}`\n")
+        lines.append(f"- removed: {len(removed_rels)}\n")
+        for r in removed_rels:
+            lines.append(f"  - `{r.source}` --[{r.relation_type}]--> `{r.target}`\n")
+
+    Path(args.report).write_text("".join(lines), encoding="utf-8")
+    console.print(
+        f"[green]Diff → {args.report}[/green] "
+        f"(entities: +{len(added_entities)}/-{len(removed_entities)} · "
+        f"relations: +{len(added_rels)}/-{len(removed_rels)})"
+    )
+    return 0
+
+
 def _print_causal_summary(cg):
     from ontograph.causal_models import CausalGraph
     table = Table(title="Causal Graph Summary")
@@ -715,6 +929,13 @@ def main():
                                "then consolidates into a minimal vocabulary (ignores --schema)")
     p_ingest.add_argument("--save-schema", default=None, metavar="PATH",
                           help="Save the induced schema to a YAML file for reuse (schema-free mode only)")
+    # Phase D additions (spec §5)
+    p_ingest.add_argument("--ast-repo", default=None, metavar="PATH",
+                          help="Repository root to AST-extract alongside text extraction")
+    p_ingest.add_argument("--dual-extract", action="store_true",
+                          help="Emit only the LLM×AST agreement set (requires --ast-repo)")
+    p_ingest.add_argument("--quality-report", default=None, metavar="PATH",
+                          help="Write the six-metric quality report to this path")
 
     # merge
     p_merge = sub.add_parser("merge", help="Merge multiple knowledge graphs")
@@ -766,6 +987,26 @@ def main():
                            help="Report JSON path (default: <input>.quality.json)")
     p_quality.add_argument("--allow-gate-failure", action="store_true",
                            help="Exit 0 even if gates fail (report still written)")
+
+    # ground (Phase D post-hoc grounding pass)
+    p_ground = sub.add_parser("ground",
+                              help="Post-hoc grounding: attach code/citation anchors to a KG")
+    p_ground.add_argument("--kg", required=True, help="Input KG JSON path")
+    p_ground.add_argument("--ast-repo", required=True, help="Repository root for AST extraction")
+    p_ground.add_argument("--citation-bib", default=None, metavar="PATH",
+                          help="JSON file mapping entity names to citation keys")
+    p_ground.add_argument("--in-place", action="store_true",
+                          help="Overwrite the input KG with the grounded version")
+    p_ground.add_argument("--output", "-o", default=None,
+                          help="Output JSON path (default: <kg>.grounded.json; ignored with --in-place)")
+    p_ground.add_argument("--schema", default="base", help="Schema name or YAML path")
+
+    # diff (Phase D KG comparison)
+    p_diff = sub.add_parser("diff",
+                            help="Compare two knowledge graphs and emit a markdown report")
+    p_diff.add_argument("--old", required=True, help="Baseline KG JSON path")
+    p_diff.add_argument("--new", required=True, help="Current KG JSON path")
+    p_diff.add_argument("--report", required=True, help="Output markdown path")
 
     # cross-check (Phase D LLM × AST agreement set)
     p_xcheck = sub.add_parser("cross-check",
@@ -828,6 +1069,8 @@ def main():
         "serve": cmd_serve,
         "quality": cmd_quality,
         "cross-check": cmd_cross_check,
+        "ground": cmd_ground,
+        "diff": cmd_diff,
     }
 
     if args.command == "causal":
