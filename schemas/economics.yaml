@@ -73,6 +73,20 @@ relation_types:
     description: "Shock triggers a mechanism or state change"
     domain: [shock]
     range: [mechanism, state_variable, agent]
+  alters:
+    description: >
+      Intervention. The source CHANGES the target's parameters or decision rule,
+      so the mechanism downstream of this edge is a different mechanism. This is
+      Pearl's do(): it acts on the rule, not on the rule's inputs. Contrast
+      `triggers`, where a disturbance moves the inputs of a mechanism that is
+      left intact, and `feeds_into`, where a variable is simply an input. A
+      policy that rewrites how an agent sets prices `alters` that mechanism; a
+      demand disturbance that moves the quantity the same unchanged rule reads
+      `triggers` it. Keeping the two apart is what decides whether a
+      counterfactual is answerable from observed history, since an intervention
+      breaks the identification the observed regime supplied.
+    domain: [shock, agent, mechanism, constraint]
+    range: [parameter, mechanism]
   amplifies:
     description: "Source amplifies the effect of target"
   dampens:
@@ -103,3 +117,8 @@ extraction_hints:
     - "X clears Y"
     - "X triggers Y"
     - "X depends on Y"
+    - "X changes the rule for Y"
+    - "X overrides Y"
+    - "under X, Y no longer applies"
+    - "X is replaced by Y"
+    - "X sets the parameter Y"

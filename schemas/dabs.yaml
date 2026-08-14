@@ -73,6 +73,19 @@ relation_types:
     default_form: identity
 
   # -- DABS-specific additions -------------------------------------------
+  alters:
+    description: >
+      Intervention, inherited from `economics` and given DABS edge semantics
+      here. The source changes the target's parameters or decision rule, so the
+      mechanism downstream is a different mechanism. The concrete local case is
+      the monetary block: with the endogenous setting the Taylor rule is the
+      mechanism and inflation `feeds_into` it, whereas the exogenous policy-rate
+      override REPLACES the reaction function and therefore `alters` it. Before
+      this relation existed both rendered as `shock --triggers--> mechanism`.
+    domain: [shock, agent, mechanism, constraint]
+    range: [parameter, mechanism]
+    default_edge_class: structural
+    default_lag: within_step
   relaxes:
     description: "Smooth operator provides a differentiable relaxation of a discrete mechanism (e.g. smooth_relu relaxes max(0,·))"
     domain: [mechanism]
