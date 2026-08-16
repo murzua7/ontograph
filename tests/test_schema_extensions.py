@@ -233,6 +233,63 @@ class TestRelationTypeDefaults:
         assert eq.default_form == "identity"
 
 
+# ── Parameter provenance: non-provider bases must be expressible ──
+
+class TestParameterProvenance:
+    """A parameter can be grounded on something that is not a data provider.
+
+    Before `evidence_basis`, `sourced_from` ranged only over `data_source`, a named
+    empirical data provider, so a parameter that was assumed, set by model design, or
+    fitted to an aggregate target could carry no provenance edge at all and read as one
+    with no provenance. Sorting the 22 rows of Mahmood et al. 2026 Extended Data Table 1
+    found 4 with no home at any level and 6 more with a status but no valid target.
+
+    Extraction is schema-driven (`llm_extractor.py` builds its prompt from these
+    definitions), so a vocabulary absent here is one the extractor can never emit. That
+    is what makes these assertions behavioural rather than cosmetic.
+    """
+
+    def test_evidence_basis_type_exists_with_non_provider_bases(self):
+        from ontograph.schema import load_schema
+        dabs = load_schema("dabs")
+        assert "evidence_basis" in dabs.entity_types
+        subs = dabs.entity_types["evidence_basis"].subtypes
+        for st in ("direct_measurement", "literature_estimate", "field_estimate",
+                   "calibration", "model_design", "assumed"):
+            assert st in subs, f"evidence_basis.subtypes missing '{st}'"
+
+    def test_parameter_carries_effective_subtype(self):
+        from ontograph.schema import load_schema
+        dabs = load_schema("dabs")
+        assert "effective" in dabs.entity_types["parameter"].subtypes
+
+    def test_sourced_from_accepts_both_provider_and_basis(self):
+        """The widening must not cost the original range."""
+        from ontograph.schema import load_schema
+        dabs = load_schema("dabs")
+        assert dabs.validate_relation("parameter", "sourced_from", "data_source")
+        assert dabs.validate_relation("parameter", "sourced_from", "evidence_basis")
+        assert dabs.validate_relation("state_variable", "sourced_from", "evidence_basis")
+
+    def test_sourced_from_still_rejects_an_out_of_range_target(self):
+        """Widening is not the same as removing the constraint."""
+        from ontograph.schema import load_schema
+        dabs = load_schema("dabs")
+        assert not dabs.validate_relation("parameter", "sourced_from", "mechanism")
+        assert not dabs.validate_relation("mechanism", "sourced_from", "evidence_basis")
+
+    def test_evidence_basis_reaches_the_extraction_prompt(self):
+        """Schema-driven extraction: absent from the prompt means never emitted."""
+        from ontograph.schema import load_schema
+        from ontograph.llm_extractor import _format_entity_types, _format_relation_types
+        dabs = load_schema("dabs")
+        entities = _format_entity_types(dabs)
+        assert "evidence_basis" in entities
+        assert "assumed" in entities and "model_design" in entities
+        assert "effective" in entities
+        assert "evidence_basis" in _format_relation_types(dabs)
+
+
 # ── DABS schema equivalence: extends-based vs self-contained ──
 
 class TestDabsExtendsEquivalence:

@@ -26,8 +26,14 @@ entity_types:
     subtypes: [accounting_identity, regulatory, budget, equilibrium, solvency, assertion]
     color: "#F44336"
   parameter:
-    description: "Fixed or calibrated coefficient (adapter output, warm-up, regularisation)"
-    subtypes: [calibrated, structural, regime, adapter_output, warmup, regularisation]
+    description: >
+      Fixed or calibrated coefficient (adapter output, warm-up, regularisation).
+      `effective` marks a value that stands in for several unmodelled processes
+      at once, so it is NOT comparable with the literature value of the process
+      it is named after and must not be read in isolation. The subtype list is a
+      flat mix of status, origin and role rather than a partition, which is the
+      pre-existing convention here.
+    subtypes: [calibrated, structural, regime, adapter_output, warmup, regularisation, effective]
     color: "#607D8B"
   theory:
     description: "Named theoretical framework or model"
@@ -39,6 +45,15 @@ entity_types:
     description: "Empirical data provider used to calibrate or benchmark DABS (BIS, ECB, FRED, INSEE, ORBIS, WID, Eurostat, IMF, OECD)"
     subtypes: [regulator, statistical_agency, commercial_vendor, research_archive]
     color: "#00ACC1"
+  evidence_basis:
+    description: >
+      Non-provider ground for a parameter's value, the sibling of `data_source`
+      for every basis that is not a named empirical data provider. A parameter
+      fitted to reproduce an aggregate target, stipulated with no source, or set
+      as a modelling choice has a basis but no provider, and before this type
+      existed such a parameter could carry no provenance edge at all.
+    subtypes: [direct_measurement, literature_estimate, field_estimate, calibration, model_design, assumed]
+    color: "#7E57C2"
   bug_fix:
     description: "Historical correction to a mechanism; records a code-change event tied to a known pathology (phantom-bias, inventory residual, consumption scale)"
     color: "#8BC34A"
@@ -120,9 +135,14 @@ relation_types:
     default_edge_class: structural
     default_lag: within_step
   sourced_from:
-    description: "Empirical provenance — parameter or state is calibrated/benchmarked from a named data source"
+    description: >
+      Provenance. The parameter or state derives its value from the target,
+      either a named empirical data provider or, where no provider exists, the
+      basis it was set on. The range covers both because restricting it to
+      `data_source` made an assumed or design-chosen value unrecordable, and a
+      value with no expressible provenance reads as one with none.
     domain: [parameter, state_variable]
-    range: [data_source]
+    range: [data_source, evidence_basis]
     default_edge_class: parameter
   embeds:
     description: "Learned operator produces an embedding consumed by downstream mechanisms (e.g. InitialAdapter → regime embedding)"
@@ -155,6 +175,11 @@ extraction_hints:
     - "sourced from"
     - "regime embedding"
     - "_assert_"
+    - "effective parameter"
+    - "assumed"
+    - "placeholder"
+    - "by design"
+    - "not a direct measurement"
   relation_signals:
     - "X is the smooth relaxation of Y"
     - "X supersedes Y"
@@ -162,6 +187,9 @@ extraction_hints:
     - "X is applied during Y"
     - "phase X executes before Y"
     - "X is sourced from Y"
+    - "X is assumed"
+    - "X is set by model design"
+    - "X is an effective value for Y"
     - "X embeds Y"
     - "X distils Y into Z"
     - "X asserts Y"
