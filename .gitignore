@@ -8,3 +8,4 @@ build/
 .claude/
 *.json
 !schemas/*.yaml
+!tests/fixtures/ambiguity_gold.json

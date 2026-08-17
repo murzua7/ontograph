@@ -1,0 +1,74 @@
+[
+  {
+    "source": "interest_rate",
+    "target": "investment",
+    "expected_class": "decisive_negative",
+    "passage": "A rise in the policy interest rate unambiguously depresses firm investment in the short run by raising the user cost of capital."
+  },
+  {
+    "source": "aggregate_demand",
+    "target": "output",
+    "expected_class": "decisive_positive",
+    "passage": "In the short run, an exogenous increase in aggregate demand raises real output through standard Keynesian multiplier mechanics."
+  },
+  {
+    "source": "government_spending",
+    "target": "private_investment",
+    "expected_class": "ambiguous",
+    "passage": "The effect of government spending on private investment is regime-dependent: crowding out dominates at full employment, while crowding in can occur at the zero lower bound."
+  },
+  {
+    "source": "minimum_wage",
+    "target": "employment",
+    "expected_class": "ambiguous",
+    "passage": "Empirical estimates of the minimum-wage-to-employment elasticity range from negative to zero to mildly positive depending on monopsony power and the bite of the wage floor."
+  },
+  {
+    "source": "monetary_base",
+    "target": "inflation",
+    "expected_class": "ambiguous",
+    "passage": "The long-run pass-through from the monetary base to inflation depends critically on the regime: it is tight under money-multiplier regimes and effectively zero when banks are reserve-saturated."
+  },
+  {
+    "source": "exchange_rate_depreciation",
+    "target": "net_exports",
+    "expected_class": "decisive_positive",
+    "passage": "Under standard Marshall-Lerner conditions, a real depreciation raises net exports after the J-curve has worked through."
+  },
+  {
+    "source": "oil_price",
+    "target": "headline_inflation",
+    "expected_class": "decisive_positive",
+    "passage": "A sustained rise in oil prices mechanically lifts headline inflation via the energy component of the CPI basket."
+  },
+  {
+    "source": "credit_growth",
+    "target": "systemic_risk",
+    "expected_class": "decisive_positive",
+    "passage": "Rapid credit growth, especially household credit, is a robust leading indicator of elevated systemic risk and subsequent financial crises."
+  },
+  {
+    "source": "capital_requirements",
+    "target": "bank_lending",
+    "expected_class": "decisive_negative",
+    "passage": "Tightening bank capital requirements reduces bank lending over the transition, especially for capital-constrained institutions."
+  },
+  {
+    "source": "weather",
+    "target": "gdp",
+    "expected_class": "silent",
+    "passage": "Monthly weather anomalies and quarterly GDP growth are both reported in the national statistics bulletin."
+  },
+  {
+    "source": "central_bank_governor_name",
+    "target": "inflation",
+    "expected_class": "silent",
+    "passage": "The current central bank governor was appointed in 2019; inflation has been running above target since 2021."
+  },
+  {
+    "source": "productivity",
+    "target": "wages",
+    "expected_class": "ambiguous",
+    "passage": "The productivity-wage link has weakened markedly in advanced economies since the 1980s, and the sign of the short-run relationship depends on labour-market slack and bargaining institutions."
+  }
+]
