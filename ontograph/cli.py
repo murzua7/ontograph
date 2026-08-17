@@ -715,15 +715,15 @@ def cmd_quality(args) -> int:
     table.add_row("coverage",     _fmt_ratio(report.coverage["ratio"]),     _status("coverage"))
     table.add_row("groundedness", _fmt_ratio(report.groundedness["ratio"]), _status("groundedness"))
     table.add_row("signedness",   _fmt_ratio(report.signedness["ratio"]),   _status("signedness"))
-    table.add_row("orphan_rate",  _fmt_ratio(report.orphan_rate["ratio"]),  "—")
-    table.add_row("consistency",  _fmt_ratio(report.consistency["ratio"]),  "—")
+    table.add_row("orphan_rate",  _fmt_ratio(report.orphan_rate["ratio"]),  "-")
+    table.add_row("consistency",  _fmt_ratio(report.consistency["ratio"]),  "-")
     table.add_row("cycles (within)", str(report.cycle_count["within_step"]), _status("cycle-within_step"))
     table.add_row("cycles (across)", str(report.cycle_count["across_step"]), _status("cycle-across_step"))
     if report.resolution.get("enabled"):
         table.add_row("anchor resolution", _fmt_ratio(report.resolution["ratio"]),
                       _status("anchor_resolution"))
     console.print(table)
-    console.print(f"Report → {out_path}")
+    console.print(f"Report -> {out_path}")
 
     if not report.gates_passed and not getattr(args, "allow_gate_failure", False):
         for f in report.failures:
