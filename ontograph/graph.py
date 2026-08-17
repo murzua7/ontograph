@@ -28,11 +28,15 @@ class OntologyGraph:
         )
 
     def add_relation(self, relation: Relation) -> None:
+        # Stash the full Relation object on the edge so discipline-v1 fields
+        # (sign, lag, form, edge_class, conditional_on, provenance) survive
+        # the round trip through NetworkX storage into `to_kg()`.
         self.g.add_edge(
             relation.source,
             relation.target,
             relation_type=relation.relation_type,
             weight=relation.weight,
+            _relation=relation,
         )
 
     def get_entity(self, name: str) -> Entity | None:
@@ -118,6 +122,22 @@ class OntologyGraph:
                 sub.g.add_edge(u, v, **data)
         return sub
 
+    def subgraph_neighborhood(self, root: str, depth: int = 2) -> OntologyGraph:
+        """Extract subgraph within `depth` hops of `root` (bidirectional BFS)."""
+        if root not in self._entities:
+            raise ValueError(f"Entity '{root}' not found. Available: {list(self._entities.keys())[:10]}")
+        visited = {root}
+        frontier = {root}
+        for _ in range(depth):
+            next_frontier = set()
+            for node in frontier:
+                next_frontier.update(self.g.successors(node))
+                next_frontier.update(self.g.predecessors(node))
+            next_frontier -= visited
+            visited.update(next_frontier)
+            frontier = next_frontier
+        return self.subgraph(list(visited))
+
     # --- Serialization ---
 
     def to_kg(self) -> KnowledgeGraph:
@@ -126,7 +146,15 @@ class OntologyGraph:
         for u, v, data in self.g.edges(data=True):
             source_entity = self._entities.get(u)
             target_entity = self._entities.get(v)
-            if source_entity and target_entity:
+            if not (source_entity and target_entity):
+                continue
+            # Prefer the stashed Relation (preserves discipline-v1 fields +
+            # provenance); fall back to minimal reconstruction for edges
+            # added by code paths that predate the stashing convention.
+            rel = data.get("_relation")
+            if isinstance(rel, Relation):
+                kg.relations.append(rel)
+            else:
                 kg.relations.append(Relation(
                     source=u, target=v,
                     relation_type=data.get("relation_type", "relates_to"),

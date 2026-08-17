@@ -43,6 +43,29 @@ class CitationAnchor:
 
 
 @dataclass
+class DocAnchor:
+    """Grounding anchor: a concrete, reproducible pointer into the source doc.
+
+    A DocAnchor upgrades a vague `Provenance.passage` string into a locatable
+    span. The canonical pointer is (document, char_start, char_end) against
+    the parsed document's full_text. `line` is an optional markdown line
+    number (1-indexed) for human-readable navigation; `section` mirrors
+    `Provenance.section` so DocAnchors are self-contained.
+
+    Unlike `Provenance` (which is narrative — "this is where the claim came
+    from"), a DocAnchor is a *grounding claim*: the entity is represented
+    verbatim at this exact span. That is why DocAnchor counts toward
+    `Entity.is_grounded()` and Provenance does not.
+    """
+    document: str
+    char_start: int = -1
+    char_end: int = -1
+    line: int | None = None
+    section: str = ""
+    passage: str = ""
+
+
+@dataclass
 class Entity:
     """A node in the knowledge graph."""
     name: str
@@ -54,6 +77,7 @@ class Entity:
     # Grounding — discipline-v1 additions
     code_anchors: list[CodeAnchor] = field(default_factory=list)
     citation_anchors: list[CitationAnchor] = field(default_factory=list)
+    doc_anchors: list[DocAnchor] = field(default_factory=list)
     abstract: bool = False
     abstract_rationale: str = ""
     confidence: float = 1.0
@@ -65,17 +89,31 @@ class Entity:
         return f"{slug}_{h}"
 
     def is_grounded(self) -> bool:
-        """True iff the entity carries at least one non-empty code or citation anchor.
+        """True iff the entity carries at least one concrete anchor.
 
-        `abstract` is orthogonal: an abstract entity that deliberately has no anchors
-        still returns False here. The quality gate is responsible for combining
-        is_grounded() with the abstract flag to decide whether ungroundedness is a defect.
+        Three grounding families, any one of which is sufficient:
+          • `code_anchors` — concrete code reference (repo+path)
+          • `citation_anchors` — bibliographic reference (key)
+          • `doc_anchors` — reproducible document span (document + located
+            char range or line)
+
+        A DocAnchor with char_start ≥ 0 (or an explicit `line`) counts —
+        both give a reader a reproducible way to re-find the passage. A
+        DocAnchor carrying only document+passage (no offset) does NOT
+        count: that is no stronger than ordinary Provenance.
+
+        `abstract` is orthogonal: an abstract entity that deliberately
+        has no anchors still returns False here. The quality gate is
+        responsible for combining `is_grounded()` with the abstract flag.
         """
         for a in self.code_anchors:
             if a.path and a.repo:
                 return True
         for c in self.citation_anchors:
             if c.key:
+                return True
+        for d in self.doc_anchors:
+            if d.document and (d.char_start >= 0 or d.line is not None):
                 return True
         return False
 
@@ -105,6 +143,11 @@ class KnowledgeGraph:
     relations: list[Relation] = field(default_factory=list)
     schema_name: str = "base"
     documents: list[str] = field(default_factory=list)
+    # Extraction provenance: prompt_hash, schema_hash, model, backend,
+    # ontograph_version, extracted_at, mode. Populated by `ontograph ingest`
+    # via `ontograph.provenance.extraction_provenance`. Empty for KGs
+    # created programmatically or loaded from older JSON.
+    extraction: dict[str, Any] = field(default_factory=dict)
 
     def add_entity(self, entity: Entity) -> None:
         if entity.name in self.entities:
@@ -121,6 +164,11 @@ class KnowledgeGraph:
             for c in entity.citation_anchors:
                 if (c.key, c.pages) not in existing_cites:
                     existing.citation_anchors.append(c)
+            existing_docs = {(d.document, d.char_start, d.char_end, d.line)
+                             for d in existing.doc_anchors}
+            for d in entity.doc_anchors:
+                if (d.document, d.char_start, d.char_end, d.line) not in existing_docs:
+                    existing.doc_anchors.append(d)
         else:
             self.entities[entity.name] = entity
 
@@ -138,11 +186,13 @@ class KnowledgeGraph:
     def from_json(cls, data: str) -> KnowledgeGraph:
         raw = json.loads(data)
         kg = cls(schema_name=raw.get("schema_name", "base"),
-                 documents=raw.get("documents", []))
+                 documents=raw.get("documents", []),
+                 extraction=raw.get("extraction", {}))
         for name, edata in raw.get("entities", {}).items():
             prov = [Provenance(**p) for p in edata.get("provenance", [])]
             code_anchors = [CodeAnchor(**a) for a in edata.get("code_anchors", [])]
             citation_anchors = [CitationAnchor(**c) for c in edata.get("citation_anchors", [])]
+            doc_anchors = [DocAnchor(**d) for d in edata.get("doc_anchors", [])]
             kg.entities[name] = Entity(
                 name=edata["name"],
                 entity_type=edata["entity_type"],
@@ -152,6 +202,7 @@ class KnowledgeGraph:
                 metadata=edata.get("metadata", {}),
                 code_anchors=code_anchors,
                 citation_anchors=citation_anchors,
+                doc_anchors=doc_anchors,
                 abstract=edata.get("abstract", False),
                 abstract_rationale=edata.get("abstract_rationale", ""),
                 confidence=edata.get("confidence", 1.0),

@@ -127,7 +127,10 @@ class LLMClient:
         return LLMResponse(content=content, model="mock")
 
     def _claude_code_chat(self, messages: list[dict[str, str]], temperature: float) -> LLMResponse:
-        """Use Claude Code CLI in print mode — uses Max subscription, no API credits."""
+        """Use Claude Code CLI in print mode — routes through the authenticated
+        subscription (no API credits). If ``ANTHROPIC_API_KEY`` / ``ANTHROPIC_AUTH_TOKEN``
+        are present in the environment the CLI silently switches to API billing,
+        so they are stripped from the subprocess env."""
         import subprocess
         import sys
 
@@ -145,6 +148,11 @@ class LLMClient:
         if self.model:
             cmd.extend(["--model", self.model])
 
+        env = {
+            k: v for k, v in os.environ.items()
+            if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+        }
+
         try:
             # Pass bytes explicitly so Windows never wraps stdin in a
             # cp1252 TextIOWrapper — `text=True` + `encoding="utf-8"`
@@ -155,11 +163,17 @@ class LLMClient:
                 input=prompt.encode("utf-8"),
                 capture_output=True,
                 timeout=120,
+                env=env,
             )
             content = result.stdout.decode("utf-8", errors="replace").strip()
             if result.returncode != 0:
                 stderr_text = result.stderr.decode("utf-8", errors="replace")
-                print(f"    [claude-code] stderr: {stderr_text[:200]}", file=sys.stderr)
+                stdout_text = result.stdout.decode("utf-8", errors="replace")
+                print(
+                    f"    [claude-code] rc={result.returncode} "
+                    f"stdout={stdout_text[:200]!r} stderr={stderr_text[:200]!r}",
+                    file=sys.stderr,
+                )
                 content = '{"entities": [], "relations": []}'
             elif not content:
                 content = '{"entities": [], "relations": []}'

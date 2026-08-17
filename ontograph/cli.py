@@ -178,9 +178,15 @@ def cmd_ingest(args):
             graph.add_relation(r)
         console.print(f"  -> {len(entities)} entities, {len(relations)} relations")
 
+        from ontograph.provenance import extraction_provenance
         output = Path(args.output)
         kg = graph.to_kg()
         kg.documents = [str(f) for f in files]
+        kg.extraction = extraction_provenance(
+            mode="batch-in", schema=schema,
+            model=getattr(args, "llm_model", None),
+            backend=getattr(args, "llm_backend", None),
+        )
         output.write_text(kg.to_json(), encoding="utf-8")
         console.print(f"\n[green]Graph saved to {output}[/green]")
         _print_summary(graph)
@@ -245,10 +251,18 @@ def cmd_ingest(args):
             console.print(f"[green]Induced schema saved to {save_schema_path}[/green]")
             console.print(f"  Reuse with: ontograph ingest ... --schema {save_schema_path}")
 
+        from ontograph.provenance import extraction_provenance
         output = Path(args.output)
         kg = graph.to_kg()
         kg.schema_name = "induced"
         kg.documents = [str(f) for f in files]
+        # Schema-free KGs have no input schema; consolidation produces one,
+        # but the relevant hash for reproducibility is the prompt set.
+        kg.extraction = extraction_provenance(
+            mode="schema-free", schema=None,
+            model=getattr(args, "llm_model", None),
+            backend=getattr(args, "llm_backend", None),
+        )
         output.write_text(kg.to_json(), encoding="utf-8")
         console.print(f"\n[green]Graph saved to {output}[/green]")
         _print_summary(graph)
@@ -322,9 +336,21 @@ def cmd_ingest(args):
             graph.add_relation(r)
 
     # Output the KG.
+    from ontograph.provenance import extraction_provenance
+    if getattr(args, "dual_extract", False):
+        prov_mode = "dual-extract"
+    elif args.llm:
+        prov_mode = "llm"
+    else:
+        prov_mode = "heuristic"
     output = Path(args.output)
     kg = graph.to_kg()
     kg.documents = [str(f) for f in files]
+    kg.extraction = extraction_provenance(
+        mode=prov_mode, schema=schema,
+        model=getattr(args, "llm_model", None) if args.llm else None,
+        backend=getattr(args, "llm_backend", None) if args.llm else None,
+    )
     output.write_text(kg.to_json(), encoding="utf-8")
     console.print(f"\n[green]Graph saved to {output}[/green]")
 
@@ -485,24 +511,42 @@ def cmd_mcp_sync(args):
 
 
 def cmd_view(args):
-    """Generate a self-contained Cytoscape.js HTML viewer and open in browser."""
+    """Generate a self-contained interactive HTML viewer and open in browser.
+
+    Default: 3D force-graph (ontograph.dashboard.force3d). The legacy
+    Cytoscape.js 2D viewer is available via `--legacy-2d`.
+    """
     import webbrowser
 
     graph_path = Path(args.input)
-    graph_data = graph_path.read_text(encoding="utf-8")
 
-    template_path = Path(__file__).parent / "dashboard" / "cytoscape_viewer.html"
-    template = template_path.read_text(encoding="utf-8")
-
-    # Inject graph data into the HTML template
-    html = template.replace(
-        '<script id="graph-data" type="application/json"></script>',
-        f'<script id="graph-data" type="application/json">{graph_data}</script>',
-    )
-
-    output = Path(args.output) if args.output else graph_path.with_suffix(".html")
-    output.write_text(html, encoding="utf-8")
-    console.print(f"[green]Viewer saved to {output}[/green]")
+    if getattr(args, "legacy_2d", False):
+        graph_data = graph_path.read_text(encoding="utf-8")
+        template_path = Path(__file__).parent / "dashboard" / "cytoscape_viewer.html"
+        template = template_path.read_text(encoding="utf-8")
+        html = template.replace(
+            '<script id="graph-data" type="application/json"></script>',
+            f'<script id="graph-data" type="application/json">{graph_data}</script>',
+        )
+        output = Path(args.output) if args.output else graph_path.with_suffix(".html")
+        output.write_text(html, encoding="utf-8")
+        console.print(f"[green]2D viewer saved to {output}[/green]")
+    else:
+        from ontograph.dashboard.force3d import build_3d_html
+        output = Path(args.output) if args.output else graph_path.with_suffix(".html")
+        base = getattr(args, "base", None)
+        cluster_raw = getattr(args, "cluster", "auto")
+        cluster_mode: bool | str = {"on": True, "off": False}.get(cluster_raw, "auto")
+        cluster_threshold = getattr(args, "cluster_threshold", 5000)
+        build_3d_html(
+            graph_path, output,
+            base_kg_path=Path(base) if base else None,
+            cluster_mode=cluster_mode,
+            cluster_threshold=cluster_threshold,
+        )
+        tag = " (diff mode)" if base else ""
+        console.print(f"[green]3D viewer saved to {output}[/green]{tag}  "
+                      f"({output.stat().st_size/1024:.0f} KB)")
 
     if not args.no_open:
         webbrowser.open(str(output.resolve()))
@@ -711,6 +755,13 @@ def cmd_cross_check(args) -> int:
         ast_entities, ast_relations,
     )
 
+    from ontograph.provenance import extraction_provenance
+    kg.extraction = extraction_provenance(
+        mode="dual-extract", schema=schema,
+        model=getattr(args, "llm_model", None),
+        backend=getattr(args, "llm_backend", None),
+    )
+
     out_kg = Path(args.output)
     out_kg.write_text(kg.to_json(), encoding="utf-8")
     console.print(f"[green]Agreement KG → {out_kg}[/green] "
@@ -877,6 +928,216 @@ def cmd_diff(args) -> int:
     return 0
 
 
+def cmd_cross_model(args) -> int:
+    """Cross-model extraction agreement (#46).
+
+    Given two independent KG extractions (typically from different LLM
+    backends or model versions), compute the agreement intersection plus
+    a structured report. Distinct from `cmd_cross_check`, which merges
+    LLM with AST; here both inputs are equally-trusted prose extractions.
+    """
+    from ontograph.cross_model import build_agreement_kg, cross_model_agreement
+    from ontograph.models import KnowledgeGraph
+
+    path_a = Path(args.kg_a)
+    path_b = Path(args.kg_b)
+    report = cross_model_agreement(path_a, path_b)
+    kg_a_loaded = KnowledgeGraph.from_json(path_a.read_text(encoding="utf-8"))
+    kg_b_loaded = KnowledgeGraph.from_json(path_b.read_text(encoding="utf-8"))
+    kg = build_agreement_kg(report, kg_a_loaded, kg_b_loaded)
+
+    out_kg = Path(args.output) if getattr(args, "output", None) else path_a.with_name(path_a.stem + ".cross_model.json")
+    out_report = Path(args.report) if getattr(args, "report", None) else path_a.with_name(path_a.stem + ".cross_model_report.json")
+    out_kg.write_text(kg.to_json(), encoding="utf-8")
+    out_report.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    s = report["summary"]
+    table = Table(title="Cross-model agreement")
+    table.add_column("Metric")
+    table.add_column("Value", justify="right")
+    table.add_row("entities (A / B)", f"{s['n_entities_a']} / {s['n_entities_b']}")
+    table.add_row("entity agreement rate", f"{s['entity_agreement_rate']:.2f}")
+    table.add_row("relations (A / B)", f"{s['n_relations_a']} / {s['n_relations_b']}")
+    table.add_row("relation agreement rate", f"{s['relation_agreement_rate']:.2f}")
+    table.add_row("sign agreement rate", f"{s['sign_agreement_rate']:.2f}")
+    table.add_row("sign conflicts", str(len(report["relations"]["sign_conflicts"])))
+    table.add_row("type conflicts", str(len(report["entities"]["type_conflicts"])))
+    console.print(table)
+    console.print(f"KG -> {out_kg}")
+    console.print(f"Report -> {out_report}")
+    return 0
+
+
+def cmd_reprompt_signs(args) -> int:
+    """Targeted LLM re-prompt for unknown-sign relations (#45).
+
+    Walks the input KG, asks the LLM a single focused question per
+    unknown-sign relation with a passage, mutates the KG in place with
+    confident answers, and writes the updated KG plus a JSON report. The
+    LLM client is constructed via `_make_llm_client` so tests can stub
+    the call and production runs stay on the subscription backend.
+    """
+    from ontograph.models import KnowledgeGraph
+    from ontograph.reprompt import targeted_reprompt_unknown_signs
+
+    kg_path = Path(args.input)
+    kg = KnowledgeGraph.from_json(kg_path.read_text(encoding="utf-8"))
+
+    client = _make_llm_client(args)
+    report = targeted_reprompt_unknown_signs(
+        kg, client, min_confidence=float(args.min_confidence),
+    )
+
+    out_kg = Path(args.output) if getattr(args, "output", None) else kg_path.with_suffix(".reprompted.json")
+    out_kg.write_text(kg.to_json(), encoding="utf-8")
+    out_report = Path(args.report) if getattr(args, "report", None) else kg_path.with_suffix(".reprompt_report.json")
+    out_report.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    table = Table(title="Sign re-prompt")
+    table.add_column("Bucket")
+    table.add_column("Count", justify="right")
+    table.add_row("candidates (unknown w/ passage)", str(report["n_candidates"]))
+    table.add_row("updated", str(report["n_updated"]))
+    table.add_row("unchanged", str(report["n_unchanged"]))
+    table.add_row("skipped (no passage / low conf)", str(len(report["skipped"])))
+    console.print(table)
+    console.print(f"KG -> {out_kg}")
+    console.print(f"Report -> {out_report}")
+    return 0
+
+
+def cmd_falsifier_reprompt(args) -> int:
+    """Falsifier-as-training-signal re-extraction (#49).
+
+    Loads a KG and a FalsifyReport JSON produced by `ontograph falsify`,
+    then re-prompts the LLM on each `flipped` edge with an explicit
+    simulator-backed prior. The passage remains ground truth — the prior
+    only selects which edges are worth re-examining. Mutates the KG in
+    place and writes the updated KG plus a structured report.
+    """
+    from ontograph.falsifier_prior import apply_falsifier_prior
+    from ontograph.falsify import FalsifyReport
+    from ontograph.models import KnowledgeGraph
+
+    kg_path = Path(args.kg)
+    try:
+        kg = KnowledgeGraph.from_json(kg_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        console.print(f"[red]failed to load KG: {exc}[/red]")
+        return 1
+
+    report_in_path = Path(args.falsify_report)
+    try:
+        raw = json.loads(report_in_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        console.print(f"[red]failed to load falsify report: {exc}[/red]")
+        return 1
+
+    try:
+        falsify_report = FalsifyReport(
+            confirmed=list(raw.get("confirmed", [])),
+            flipped=list(raw.get("flipped", [])),
+            unknown=list(raw.get("unknown", [])),
+            total=int(raw.get("total", 0)),
+            examined=int(raw.get("examined", 0)),
+        )
+    except (TypeError, ValueError) as exc:
+        console.print(f"[red]malformed falsify report: {exc}[/red]")
+        return 1
+
+    client = _make_llm_client(args)
+    out = apply_falsifier_prior(
+        kg, falsify_report, client,
+        min_confidence=float(args.min_confidence),
+    )
+
+    out_kg_path = (
+        Path(args.output) if getattr(args, "output", None)
+        else kg_path.with_suffix(".falsifier_reprompted.json")
+    )
+    out_kg_path.write_text(kg.to_json(), encoding="utf-8")
+    out_rep_path = (
+        Path(args.report) if getattr(args, "report", None)
+        else kg_path.with_suffix(".falsifier_reprompt_report.json")
+    )
+    out_rep_path.write_text(
+        json.dumps(out, indent=2, ensure_ascii=False), encoding="utf-8",
+    )
+
+    table = Table(title="Falsifier re-prompt")
+    table.add_column("Bucket")
+    table.add_column("Count", justify="right")
+    table.add_row("candidates (flipped w/ passage)", str(out["n_candidates"]))
+    table.add_row("updated", str(out["n_updated"]))
+    table.add_row("defended (kept original sign)", str(out["n_defended"]))
+    table.add_row("skipped", str(len(out["skipped"])))
+    console.print(table)
+    console.print(f"KG -> {out_kg_path}")
+    console.print(f"Report -> {out_rep_path}")
+    return 0
+
+
+def cmd_cycle_report(args) -> int:
+    """Enumerate signed cycles in a KG and emit a JSON report (#43).
+
+    Splits cycles by lag bucket (within_step / across_step) and embeds the
+    sign-product so reinforcing vs. dampening loops are distinguishable
+    without re-walking edges. Console table summarises counts by lag and
+    sign so DABS feedback-loop audits can spot pathological structures
+    (e.g. all-negative within-step loops) at a glance.
+    """
+    from ontograph.cycles import enumerate_cycles
+    from ontograph.models import KnowledgeGraph
+
+    kg_path = Path(args.input)
+    kg = KnowledgeGraph.from_json(kg_path.read_text(encoding="utf-8"))
+
+    relations = [
+        {
+            "source": r.source,
+            "target": r.target,
+            "relation_type": r.relation_type,
+            "sign": r.sign,
+            "lag": r.lag,
+            "edge_class": r.edge_class,
+        }
+        for r in kg.relations
+    ]
+    cycles = enumerate_cycles(
+        relations,
+        max_len=args.max_len,
+        max_cycles=args.max_cycles,
+    )
+
+    report = {
+        "kg": str(kg_path),
+        "n_cycles": len(cycles),
+        "max_len": args.max_len,
+        "max_cycles_per_lag": args.max_cycles,
+        "cycles": cycles,
+    }
+    out_path = Path(args.output) if getattr(args, "output", None) else kg_path.with_suffix(".cycles.json")
+    out_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    by_lag: dict[str, int] = {"within_step": 0, "across_step": 0}
+    by_product: dict[str, int] = {}
+    for c in cycles:
+        by_lag[c["lag"]] = by_lag.get(c["lag"], 0) + 1
+        by_product[c["product"]] = by_product.get(c["product"], 0) + 1
+
+    table = Table(title=f"Cycles ({len(cycles)} total)")
+    table.add_column("Bucket")
+    table.add_column("Count", justify="right")
+    table.add_row("within_step", str(by_lag["within_step"]))
+    table.add_row("across_step", str(by_lag["across_step"]))
+    for sign in ("+", "-", "±", "0", "unknown"):
+        if sign in by_product:
+            table.add_row(f"  product={sign}", str(by_product[sign]))
+    console.print(table)
+    console.print(f"Report -> {out_path}")
+    return 0
+
+
 def cmd_falsify(args) -> int:
     """Simulator-in-the-loop falsification (spec §4.3).
 
@@ -924,7 +1185,65 @@ def cmd_falsify(args) -> int:
     table.add_row("examined",  str(report.examined))
     table.add_row("total",     str(report.total))
     console.print(table)
-    console.print(f"Report → {report_path}")
+    console.print(f"Report -> {report_path}")
+    return 0
+
+
+def cmd_ambiguity_benchmark(args) -> int:
+    """Score a KG against a gold intentional-ambiguity benchmark (#48).
+
+    Gold file is a JSON array of objects with keys
+    ``{source, target, expected_class, passage}``; ``expected_class`` must be
+    one of ``decisive_positive|decisive_negative|ambiguous|silent``.
+    """
+    import json
+
+    from ontograph.benchmark_ambiguity import (
+        AmbiguityBenchmark,
+        AmbiguityCase,
+        score_ambiguity,
+    )
+    from ontograph.models import KnowledgeGraph
+
+    kg_path = Path(args.kg)
+    gold_path = Path(args.gold)
+
+    kg = KnowledgeGraph.from_json(kg_path.read_text(encoding="utf-8"))
+    raw_cases = json.loads(gold_path.read_text(encoding="utf-8"))
+    try:
+        cases = [
+            AmbiguityCase(
+                source=c["source"],
+                target=c["target"],
+                expected_class=c["expected_class"],
+                passage=c.get("passage", ""),
+            )
+            for c in raw_cases
+        ]
+    except (KeyError, ValueError) as exc:
+        console.print(f"[red]invalid gold file: {exc}[/red]")
+        return 1
+
+    score = score_ambiguity(kg, AmbiguityBenchmark(cases=cases))
+
+    report_path = (
+        Path(args.report) if getattr(args, "report", None)
+        else kg_path.with_suffix(".ambiguity.json")
+    )
+    report_path.write_text(
+        json.dumps(score.to_dict(), indent=2), encoding="utf-8",
+    )
+
+    table = Table(title="Ambiguity Benchmark")
+    table.add_column("Metric")
+    table.add_column("Value", justify="right")
+    table.add_row("overall_accuracy",     f"{score.overall_accuracy:.3f}")
+    table.add_row("overconfidence_rate",  f"{score.overconfidence_rate:.3f}")
+    table.add_row("decisive_recall",      f"{score.decisive_recall:.3f}")
+    table.add_row("silence_recall",       f"{score.silence_recall:.3f}")
+    table.add_row("decisive_sign_errors", str(score.decisive_sign_errors))
+    console.print(table)
+    console.print(f"Report -> {report_path}")
     return 0
 
 
@@ -1030,11 +1349,23 @@ def main():
     p_mcp.add_argument("--prefix", default="ontograph", help="Namespace prefix")
     p_mcp.add_argument("--overwrite", action="store_true", help="Overwrite instead of append")
 
-    # view (Cytoscape.js HTML)
-    p_view = sub.add_parser("view", help="Generate interactive Cytoscape.js HTML viewer")
+    # view (3D force-graph HTML by default; --legacy-2d for Cytoscape.js)
+    p_view = sub.add_parser("view",
+                            help="Generate interactive 3D HTML viewer (default) "
+                                 "or 2D Cytoscape viewer with --legacy-2d")
     p_view.add_argument("input", help="Graph JSON path")
     p_view.add_argument("--output", "-o", help="Output HTML path (default: same name as input)")
     p_view.add_argument("--no-open", action="store_true", help="Don't open in browser")
+    p_view.add_argument("--legacy-2d", action="store_true",
+                        help="Use the legacy Cytoscape.js 2D viewer instead of the 3D default")
+    p_view.add_argument("--base", default=None,
+                        help="Optional base KG JSON — renders a diff overlay "
+                             "(added / removed / changed / unchanged) against this baseline")
+    p_view.add_argument("--cluster", default="auto", choices=["auto", "on", "off"],
+                        help="Community-coarsened rendering for large KGs (#47). "
+                             "'auto' coarsens above --cluster-threshold.")
+    p_view.add_argument("--cluster-threshold", type=int, default=5000,
+                        help="Node count above which --cluster=auto activates")
 
     # extract
     p_extract = sub.add_parser("extract", help="Extract neighborhood subgraph around a root entity")
@@ -1082,6 +1413,43 @@ def main():
     p_diff.add_argument("--new", required=True, help="Current KG JSON path")
     p_diff.add_argument("--report", required=True, help="Output markdown path")
 
+    # cycle-report (#43) — JSON report of all signed cycles, split by lag
+    p_xmodel = sub.add_parser("cross-model",
+                              help="Agreement across two independent KG extractions "
+                                   "(e.g. different LLM backends). Writes the intersection "
+                                   "KG plus a structured report.")
+    p_xmodel.add_argument("kg_a", help="First KG JSON path")
+    p_xmodel.add_argument("kg_b", help="Second KG JSON path")
+    p_xmodel.add_argument("--output", "-o", default=None,
+                          help="Agreement KG path (default: <kg_a>.cross_model.json)")
+    p_xmodel.add_argument("--report", default=None,
+                          help="Report JSON path (default: <kg_a>.cross_model_report.json)")
+
+    p_reprompt = sub.add_parser("reprompt-signs",
+                                help="Targeted LLM re-prompt for unknown-sign relations")
+    p_reprompt.add_argument("input", help="Graph JSON path")
+    p_reprompt.add_argument("--output", "-o", default=None,
+                            help="Output KG JSON path (default: <input>.reprompted.json)")
+    p_reprompt.add_argument("--report", default=None,
+                            help="Report JSON path (default: <input>.reprompt_report.json)")
+    p_reprompt.add_argument("--min-confidence", type=float, default=0.6,
+                            help="Minimum LLM confidence to accept (default: 0.6)")
+    p_reprompt.add_argument("--llm-backend", default="claude-code",
+                            choices=["anthropic", "openai", "ollama", "claude-code", "mock"],
+                            help="LLM backend (default: claude-code — subscription-billed)")
+    p_reprompt.add_argument("--llm-model", default=None,
+                            help="Model override for the chosen backend")
+
+    p_cyc = sub.add_parser("cycle-report",
+                           help="Enumerate signed cycles in a KG and emit a JSON report")
+    p_cyc.add_argument("input", help="Graph JSON path")
+    p_cyc.add_argument("--output", "-o", default=None,
+                       help="Report JSON path (default: <input>.cycles.json)")
+    p_cyc.add_argument("--max-len", type=int, default=8,
+                       help="Maximum cycle length to enumerate (default: 8)")
+    p_cyc.add_argument("--max-cycles", type=int, default=50,
+                       help="Maximum cycles kept per lag bucket (default: 50)")
+
     # falsify (Phase E simulator-in-the-loop falsifier)
     p_falsify = sub.add_parser("falsify",
                                help="Run a KG against a SimulatorAdapter and bucket edges")
@@ -1092,6 +1460,37 @@ def main():
                            help="Edge subset to falsify (default: mechanism)")
     p_falsify.add_argument("--report", default=None,
                            help="Report JSON path (default: <kg>.falsify.json)")
+
+    # falsifier-reprompt (#49 — flipped edges become targeted re-extractions)
+    p_fr = sub.add_parser(
+        "falsifier-reprompt",
+        help="Re-prompt flipped edges from a falsify report with simulator prior",
+    )
+    p_fr.add_argument("--kg", required=True, help="Input KG JSON path")
+    p_fr.add_argument("--falsify-report", required=True,
+                      help="FalsifyReport JSON produced by `ontograph falsify`")
+    p_fr.add_argument("--output", "-o", default=None,
+                      help="Output KG JSON (default: <kg>.falsifier_reprompted.json)")
+    p_fr.add_argument("--report", default=None,
+                      help="Report JSON (default: <kg>.falsifier_reprompt_report.json)")
+    p_fr.add_argument("--min-confidence", type=float, default=0.6,
+                      help="Minimum LLM confidence to accept (default: 0.6)")
+    p_fr.add_argument("--llm-backend", default="claude-code",
+                      choices=["anthropic", "openai", "ollama", "claude-code", "mock"],
+                      help="LLM backend (default: claude-code — subscription-billed)")
+    p_fr.add_argument("--llm-model", default=None,
+                      help="Model override for the chosen backend")
+
+    # ambiguity-benchmark (#48 — calibration vs intentional ambiguity)
+    p_amb = sub.add_parser(
+        "ambiguity-benchmark",
+        help="Score a KG against a gold intentional-ambiguity benchmark",
+    )
+    p_amb.add_argument("--kg", required=True, help="Input KG JSON path")
+    p_amb.add_argument("--gold", required=True,
+                       help="Gold benchmark JSON path (array of cases)")
+    p_amb.add_argument("--report", default=None,
+                       help="Report JSON path (default: <kg>.ambiguity.json)")
 
     # cross-check (Phase D LLM × AST agreement set)
     p_xcheck = sub.add_parser("cross-check",
@@ -1157,6 +1556,11 @@ def main():
         "ground": cmd_ground,
         "diff": cmd_diff,
         "falsify": cmd_falsify,
+        "cycle-report": cmd_cycle_report,
+        "reprompt-signs": cmd_reprompt_signs,
+        "cross-model": cmd_cross_model,
+        "ambiguity-benchmark": cmd_ambiguity_benchmark,
+        "falsifier-reprompt": cmd_falsifier_reprompt,
     }
 
     if args.command == "causal":

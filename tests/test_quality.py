@@ -200,6 +200,91 @@ class TestSignedness:
         assert rep.signedness["signed"] == 2
 
 
+class TestWeightedSignedness:
+    """`+/-` → 1.0, `±/0` → 0.5, `unknown` → 0.0."""
+
+    def test_by_sign_breakdown_present(self, tmp_path):
+        from ontograph.quality import compute_quality_report
+        schema = _schema(tmp_path)
+        rels = [
+            _mk_rel("a", "b", sign="+", edge_class="mechanism"),
+            _mk_rel("a", "c", sign="-", edge_class="mechanism"),
+            _mk_rel("a", "d", sign="±", edge_class="mechanism"),
+            _mk_rel("a", "e", sign="unknown", edge_class="mechanism"),
+        ]
+        kg = _kg([_mk_entity(n, "state_variable") for n in "abcde"], rels)
+        rep = compute_quality_report(kg, schema)
+        assert rep.signedness["by_sign"] == {"+": 1, "-": 1, "±": 1, "unknown": 1}
+
+    def test_weighted_ratio_discounts_ambiguous_and_zero(self, tmp_path):
+        from ontograph.quality import compute_quality_report
+        schema = _schema(tmp_path)
+        rels = [
+            _mk_rel("a", "b", sign="+", edge_class="mechanism"),   # weight 1.0
+            _mk_rel("a", "c", sign="±", edge_class="mechanism"),   # weight 0.5
+            _mk_rel("a", "d", sign="0", edge_class="mechanism"),   # weight 0.5
+            _mk_rel("a", "e", sign="unknown", edge_class="mechanism"),  # weight 0.0
+        ]
+        kg = _kg([_mk_entity(n, "state_variable") for n in "abcde"], rels)
+        rep = compute_quality_report(kg, schema)
+        # Binary ratio: 3/4 (anything that's not `unknown` counts).
+        assert rep.signedness["ratio"] == pytest.approx(0.75)
+        # Weighted ratio: (1.0 + 0.5 + 0.5 + 0.0) / 4 = 0.5
+        assert rep.signedness["weighted_ratio"] == pytest.approx(0.5)
+        assert rep.signedness["weighted_signed"] == pytest.approx(2.0)
+
+    def test_unknown_gets_zero_weight(self, tmp_path):
+        from ontograph.quality import compute_quality_report
+        schema = _schema(tmp_path)
+        rels = [_mk_rel("a", "b", sign="unknown", edge_class="mechanism")]
+        kg = _kg([_mk_entity(n, "state_variable") for n in "ab"], rels)
+        rep = compute_quality_report(kg, schema)
+        assert rep.signedness["weighted_ratio"] == 0.0
+
+    def test_weighted_gate_passes_when_enough_directional(self, tmp_path):
+        """Weighted gate at 0.75: need avg weight ≥ 0.75 per mechanism edge."""
+        from ontograph.quality import compute_quality_report
+        schema = _schema(tmp_path, validation={"weighted_signedness_target": 0.75})
+        rels = [
+            _mk_rel("a", "b", sign="+", edge_class="mechanism"),
+            _mk_rel("a", "c", sign="+", edge_class="mechanism"),
+            _mk_rel("a", "d", sign="-", edge_class="mechanism"),
+            _mk_rel("a", "e", sign="±", edge_class="mechanism"),  # half credit
+        ]
+        kg = _kg([_mk_entity(n, "state_variable") for n in "abcde"], rels)
+        rep = compute_quality_report(kg, schema)
+        # (1+1+1+0.5) / 4 = 0.875 ≥ 0.75 → pass
+        assert rep.signedness["weighted_ratio"] == pytest.approx(0.875)
+        assert rep.gates_passed is True
+
+    def test_weighted_gate_fails_when_too_many_ambiguous(self, tmp_path):
+        """Gate catches the `everything is ±` gaming strategy."""
+        from ontograph.quality import compute_quality_report
+        schema = _schema(tmp_path, validation={
+            "signedness_target": 1.0,            # binary: all edges are signed → passes
+            "weighted_signedness_target": 0.75,  # weighted: all 0.5 → fails
+        })
+        rels = [
+            _mk_rel("a", "b", sign="±", edge_class="mechanism"),
+            _mk_rel("a", "c", sign="±", edge_class="mechanism"),
+            _mk_rel("a", "d", sign="±", edge_class="mechanism"),
+        ]
+        kg = _kg([_mk_entity(n, "state_variable") for n in "abcd"], rels)
+        rep = compute_quality_report(kg, schema)
+        assert rep.signedness["ratio"] == 1.0            # binary: all `±` count
+        assert rep.signedness["weighted_ratio"] == 0.5   # weighted: half-credit each
+        assert rep.gates_passed is False
+        assert any("weighted_signedness" in f for f in rep.failures)
+
+    def test_no_mechanism_edges_is_vacuous_pass(self, tmp_path):
+        from ontograph.quality import compute_quality_report
+        schema = _schema(tmp_path, validation={"weighted_signedness_target": 1.0})
+        kg = _kg([_mk_entity("a", "state_variable")], [])
+        rep = compute_quality_report(kg, schema)
+        assert rep.signedness["weighted_ratio"] == 1.0
+        assert rep.gates_passed is True
+
+
 # ── 3. Coverage ────────────────────────────────────────────────────────
 
 class TestCoverage:

@@ -131,7 +131,7 @@ uv run ontograph serve
 ```
 
 Five tabs:
-- **Graph Explorer** -- Force-directed visualization (Cytoscape.js). Nodes colored by entity type. Click to see observations, provenance, and connections.
+- **Graph Explorer** -- Interactive 3D force-directed visualization (3d-force-graph / Three.js) by default. Nodes colored by entity type, edges colored by sign (+/-/±) with animated particles showing causal direction. Right-side encyclopedia panel lists every entity with inline search, per-node descriptions, aliases, code anchors, and neighbor navigation. A legacy 2D Cytoscape.js viewer is still available via `--legacy-2d`.
 - **Entities** -- Searchable, sortable table with type filters.
 - **Relations** -- Filterable relation table.
 - **Analysis** -- Cycle detection, centrality ranking, type distribution charts.
@@ -230,7 +230,7 @@ ontograph merge <g1.json> <g2.json> ... [-o merged.json] [--threshold 0.85]
 ontograph analyze <graph.json> [--cycles] [--centrality] [--cascade-depth] [--all]
 ontograph export <graph.json> -f graphml|mermaid|jsonld|canvas [-o output]
 ontograph extract <graph.json> --root <entity> --depth 2 [-o subgraph.json]
-ontograph view <graph.json> [--no-open]
+ontograph view <graph.json> [--no-open] [--legacy-2d]
 ontograph causal ingest <file_or_dir> [--llm-backend anthropic|openai|ollama] [-o causal_graph.json]
 ontograph causal add --source <entity> --target <entity> --mechanism <name> [--evidence-type narrative] [--direction positive] [--assertiveness moderate]
 ontograph mcp-sync <graph.json> [--prefix ontograph] [--overwrite]
