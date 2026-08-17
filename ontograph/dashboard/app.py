@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -401,6 +402,14 @@ def render_export():
 # ---------------------------------------------------------------------------
 
 def main():
+    # Auto-load graph from environment or command line
+    if "graph" not in st.session_state:
+        graph_path = os.environ.get("ONTOGRAPH_GRAPH")
+        if graph_path and Path(graph_path).exists():
+            schema = load_schema(os.environ.get("ONTOGRAPH_SCHEMA", "base"))
+            data = Path(graph_path).read_text(encoding="utf-8")
+            _load_graph_from_json(data, schema)
+
     render_sidebar()
 
     tab_graph, tab_entities, tab_relations, tab_analysis, tab_export = st.tabs([

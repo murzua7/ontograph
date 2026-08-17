@@ -12,6 +12,13 @@ class Section:
     text: str
     level: int = 1
     page: int | None = None
+    # Character offset where `text` begins within ParsedDocument.full_text.
+    # -1 indicates "unknown" (e.g. PDF-extracted sections where offsets are
+    # not meaningful). Used by DocAnchor to emit locatable spans.
+    char_offset: int = -1
+    # 1-indexed line number where the section begins in the source. None for
+    # formats that don't have a natural line concept (PDFs).
+    line: int | None = None
 
 
 @dataclass

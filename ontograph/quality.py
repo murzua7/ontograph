@@ -108,18 +108,40 @@ def _groundedness(kg: KnowledgeGraph, validation: dict[str, Any]) -> dict[str, A
 
 _SIGNED_VALUES = {"+", "-", "±", "0"}
 
+# Weighted signedness (advisor-driven, 2026-04-21): `+/-` carry a clear
+# directional claim (full credit); `±/0` are explicit-ambiguous annotations
+# — useful, but carry half the information of a signed mechanism; `unknown`
+# is extractor silence and gets zero credit. Prevents a gate from being
+# gamed by blanket-labelling edges `±`.
+_SIGN_WEIGHT: dict[str, float] = {
+    "+": 1.0, "-": 1.0,
+    "±": 0.5, "0": 0.5,
+}
+
 
 def _signedness(kg: KnowledgeGraph) -> dict[str, Any]:
     total = 0
     signed = 0
+    weighted = 0.0
+    by_sign: dict[str, int] = defaultdict(int)
     for rel in kg.relations:
         if rel.edge_class != "mechanism":
             continue
         total += 1
+        by_sign[rel.sign or "unknown"] += 1
         if rel.sign in _SIGNED_VALUES:
             signed += 1
+        weighted += _SIGN_WEIGHT.get(rel.sign or "", 0.0)
     ratio = (signed / total) if total else 1.0
-    return {"ratio": ratio, "signed": signed, "total": total}
+    weighted_ratio = (weighted / total) if total else 1.0
+    return {
+        "ratio": ratio,
+        "signed": signed,
+        "total": total,
+        "weighted_ratio": weighted_ratio,
+        "weighted_signed": weighted,
+        "by_sign": dict(by_sign),
+    }
 
 
 # ── Coverage ────────────────────────────────────────────────────────────
@@ -268,12 +290,22 @@ def compute_quality_report(
                 f"groundedness {report.groundedness['ratio']:.3f} < target {g_target}"
             )
 
-    # Signedness gate
+    # Signedness gate (binary: any sign ∈ {+,-,±,0} counts)
     s_target = v.get("signedness_target")
     if s_target is not None and report.signedness["total"] > 0:
         if report.signedness["ratio"] < s_target:
             failures.append(
                 f"signedness {report.signedness['ratio']:.3f} < target {s_target}"
+            )
+
+    # Weighted signedness gate (+/- → 1.0, ±/0 → 0.5, unknown → 0.0).
+    # Independent of the binary gate; schemas can gate on either or both.
+    ws_target = v.get("weighted_signedness_target")
+    if ws_target is not None and report.signedness["total"] > 0:
+        if report.signedness["weighted_ratio"] < ws_target:
+            failures.append(
+                f"weighted_signedness {report.signedness['weighted_ratio']:.3f} "
+                f"< target {ws_target}"
             )
 
     # Coverage gate (skip if ratio is None — no AST input)
