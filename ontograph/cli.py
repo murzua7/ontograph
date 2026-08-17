@@ -637,7 +637,19 @@ def cmd_quality(args) -> int:
         ast_ents, _ = extract_from_repo(Path(args.ast_repo), schema)
         ast_entities = ast_ents
 
-    report = compute_quality_report(kg, schema, ast_entities=ast_entities)
+    anchor_roots = {}
+    for spec in getattr(args, "anchor_root", None) or []:
+        name, sep, root = spec.partition("=")
+        if not sep:
+            console.print(f"[red]--anchor-root expects name=path, got: {spec}[/red]")
+            return 2
+        anchor_roots[name] = root
+
+    report = compute_quality_report(
+        kg, schema, ast_entities=ast_entities,
+        resolve_anchors=getattr(args, "resolve_anchors", False),
+        anchor_roots=anchor_roots or None,
+    )
 
     out_path = Path(args.output) if getattr(args, "output", None) else kg_path.with_suffix(".quality.json")
     out_path.write_text(report.to_json(), encoding="utf-8")
@@ -662,6 +674,9 @@ def cmd_quality(args) -> int:
     table.add_row("consistency",  _fmt_ratio(report.consistency["ratio"]),  "—")
     table.add_row("cycles (within)", str(report.cycle_count["within_step"]), _status("cycle-within_step"))
     table.add_row("cycles (across)", str(report.cycle_count["across_step"]), _status("cycle-across_step"))
+    if report.resolution.get("enabled"):
+        table.add_row("anchor resolution", _fmt_ratio(report.resolution["ratio"]),
+                      _status("anchor_resolution"))
     console.print(table)
     console.print(f"Report → {out_path}")
 
@@ -1038,6 +1053,14 @@ def main():
                            help="Report JSON path (default: <input>.quality.json)")
     p_quality.add_argument("--allow-gate-failure", action="store_true",
                            help="Exit 0 even if gates fail (report still written)")
+    p_quality.add_argument("--resolve-anchors", action="store_true",
+                           help="Also RESOLVE every code anchor (file exists, line in "
+                                "range, symbol present); any unresolvable anchor fails "
+                                "the gate. Default off.")
+    p_quality.add_argument("--anchor-root", action="append", metavar="NAME=PATH",
+                           help="Repo-name to filesystem-root mapping for --resolve-anchors; "
+                                "repeatable. Anchors whose repo has no mapping are "
+                                "unresolvable by definition.")
 
     # ground (Phase D post-hoc grounding pass)
     p_ground = sub.add_parser("ground",

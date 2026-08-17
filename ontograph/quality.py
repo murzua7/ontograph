@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -55,6 +56,7 @@ class QualityReport:
     orphan_rate: dict[str, Any] = field(default_factory=dict)
     consistency: dict[str, Any] = field(default_factory=dict)
     cycle_count: dict[str, Any] = field(default_factory=dict)
+    resolution: dict[str, Any] = field(default_factory=dict)
     gates_passed: bool = True
     failures: list[str] = field(default_factory=list)
 
@@ -67,6 +69,7 @@ class QualityReport:
                 "orphan_rate": self.orphan_rate,
                 "consistency": self.consistency,
                 "cycle_count": self.cycle_count,
+                "resolution": self.resolution,
                 "gates_passed": self.gates_passed,
                 "failures": list(self.failures),
             },
@@ -102,6 +105,60 @@ def _groundedness(kg: KnowledgeGraph, validation: dict[str, Any]) -> dict[str, A
         for t, (g, c) in by_type_counts.items()
     }
     return {"ratio": ratio, "grounded": grounded, "total": total, "by_type": by_type}
+
+
+# ── Anchor resolution (flag-gated; default OFF) ─────────────────────────
+#
+# Groundedness checks anchor SHAPE; nothing in the gate ever opened a file, so
+# a fabricated anchor scored the same as a real one (content-blindness probe,
+# knowledge-vault outputs/probes/2026-08-16-ontograph-gate-content-blindness).
+# This pass resolves every code anchor against a caller-supplied mapping of
+# repo name to filesystem root: root known, file exists, line within the file,
+# and, when the anchor names a symbol, the symbol text present in the file (a
+# containment check, not a parse). Resolution is existence, never content: a
+# real anchor whose passage is about something else still resolves, because
+# claim-evidence congruence belongs to the judged content axis, not here.
+# Citation anchors are counted but not checked; resolving them needs a
+# bibliography, which the gate does not have.
+
+def _resolution(kg: KnowledgeGraph,
+                anchor_roots: dict[str, str] | None) -> dict[str, Any]:
+    roots = {k: Path(v) for k, v in (anchor_roots or {}).items()}
+    checked = 0
+    citation_unchecked = 0
+    unresolvable: list[dict[str, Any]] = []
+    for ent in kg.entities.values():
+        citation_unchecked += len(ent.citation_anchors)
+        for a in ent.code_anchors:
+            checked += 1
+            reason = None
+            root = roots.get(a.repo)
+            if root is None:
+                reason = "unknown repo root"
+            else:
+                f = root / a.path
+                if not f.is_file():
+                    reason = "file missing"
+                else:
+                    try:
+                        text = f.read_text(encoding="utf-8", errors="replace")
+                    except OSError:
+                        reason = "file unreadable"
+                    else:
+                        n_lines = text.count("\n") + 1
+                        if a.line < 1 or a.line > n_lines:
+                            reason = f"line {a.line} out of range (file has {n_lines})"
+                        elif a.symbol and a.symbol not in text:
+                            reason = f"symbol '{a.symbol}' not found"
+            if reason is not None:
+                unresolvable.append({"entity": ent.name, "repo": a.repo,
+                                     "path": a.path, "line": a.line,
+                                     "symbol": a.symbol, "reason": reason})
+    resolved = checked - len(unresolvable)
+    return {"enabled": True, "checked": checked, "resolved": resolved,
+            "ratio": (resolved / checked) if checked else 1.0,
+            "unresolvable": unresolvable,
+            "citation_anchors_unchecked": citation_unchecked}
 
 
 # ── Signedness ──────────────────────────────────────────────────────────
@@ -242,8 +299,14 @@ def compute_quality_report(
     ast_entities: list[Entity] | None = None,
     coverage_name_matcher: Callable[[str, str], float] = default_name_matcher,
     coverage_threshold: float = _DEFAULT_COVERAGE_THRESHOLD,
+    resolve_anchors: bool = False,
+    anchor_roots: dict[str, str] | None = None,
 ) -> QualityReport:
-    """Run all six metrics and decide gate pass/fail from schema.validation."""
+    """Run all six metrics and decide gate pass/fail from schema.validation.
+
+    `resolve_anchors` (default OFF, so existing callers are unaffected) adds
+    the anchor-resolution pass: every code anchor must resolve against
+    `anchor_roots` (repo name -> filesystem root) or the gate fails."""
     v = dict(schema.validation or {})
     report = QualityReport(
         coverage=_coverage(
@@ -256,9 +319,20 @@ def compute_quality_report(
         orphan_rate=_orphan_rate(kg),
         consistency=_consistency(kg),
         cycle_count=_cycle_count(kg),
+        resolution=_resolution(kg, anchor_roots) if resolve_anchors
+        else {"enabled": False, "checked": 0},
     )
 
     failures: list[str] = []
+
+    # Anchor-resolution gate (only when the pass ran). Any unresolvable code
+    # anchor fails: a fabricated anchor is a provenance defect per se, not a
+    # ratio to trade off.
+    if report.resolution.get("enabled") and report.resolution["unresolvable"]:
+        failures.append(
+            f"anchor_resolution: {len(report.resolution['unresolvable'])} "
+            "unresolvable code anchor(s)"
+        )
 
     # Groundedness gate
     g_target = v.get("groundedness_target")
