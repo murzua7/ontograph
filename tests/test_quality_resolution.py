@@ -160,3 +160,95 @@ def test_report_json_carries_the_resolution_block(schema, repo_root):
         _build([a]), schema,
         resolve_anchors=True, anchor_roots={"dabs": str(repo_root)})
     assert '"resolution"' in report.to_json()
+
+
+# ── Document-anchor resolution (post-merge: DocAnchor now at HEAD) ────────
+#
+# These rebuild the content-blindness probe's ORIGINAL A and B fixtures
+# verbatim: the probe document, the inflation span (supported) and the
+# football span (real but unrelated). Plus the failure classes the doc half
+# adds: fabricated passage, missing document, and span drift.
+
+from ontograph.models import DocAnchor  # noqa: E402  (post-merge import)
+
+PROBE_DOC = ("The central bank holds its inflation target at two per cent. "
+             "The local football club won its third match of the season.")
+
+
+@pytest.fixture()
+def doc_root(tmp_path):
+    d = tmp_path / "docs"
+    d.mkdir()
+    (d / "probe.md").write_text(PROBE_DOC, encoding="utf-8")
+    return d
+
+
+def _doc_ent(name, document, passage, start, end):
+    return Entity(name=name, entity_type="state_variable",
+                  doc_anchors=[DocAnchor(document=document, passage=passage,
+                                         char_start=start, char_end=end)])
+
+
+def test_doc_anchor_exact_span_resolves(schema, doc_root):
+    i0 = PROBE_DOC.index("The central bank")
+    i1 = PROBE_DOC.index("cent.") + 5
+    a = _doc_ent("inflation_target", "probe.md", PROBE_DOC[i0:i1], i0, i1)
+    report = compute_quality_report(
+        _build([a]), schema, resolve_anchors=True, doc_roots=[str(doc_root)])
+    assert report.gates_passed, report.failures
+    assert report.resolution["unresolvable"] == []
+    assert report.resolution["drifted"] == []
+
+
+def test_doc_anchor_unrelated_but_real_span_resolves(schema, doc_root):
+    """The probe's B fixture verbatim: a football passage under a mortgage
+    claim RESOLVES, existence never content."""
+    f0 = PROBE_DOC.index("The local football")
+    a = _doc_ent("mortgage_demand", "probe.md", PROBE_DOC[f0:], f0, len(PROBE_DOC))
+    report = compute_quality_report(
+        _build([a]), schema, resolve_anchors=True, doc_roots=[str(doc_root)])
+    assert report.gates_passed, report.failures
+    assert report.resolution["unresolvable"] == []
+
+
+def test_doc_anchor_fabricated_passage_fails(schema, doc_root):
+    a = _doc_ent("phantom_claim", "probe.md",
+                 "Mortgage demand rose sharply over the quarter.", 0, 46)
+    report = compute_quality_report(
+        _build([a]), schema, resolve_anchors=True, doc_roots=[str(doc_root)])
+    assert not report.gates_passed
+    assert report.resolution["unresolvable"][0]["reason"] \
+        == "passage not found in document"
+
+
+def test_doc_anchor_missing_document_fails(schema, doc_root):
+    a = _doc_ent("orphan_claim", "no_such_doc.md", "anything", 0, 8)
+    report = compute_quality_report(
+        _build([a]), schema, resolve_anchors=True, doc_roots=[str(doc_root)])
+    assert not report.gates_passed
+    assert report.resolution["unresolvable"][0]["reason"] == "document not found"
+
+
+def test_doc_anchor_drifted_span_resolves_and_is_reported(schema, doc_root):
+    """Right passage, wrong offsets: span rot is metadata decay, not
+    fabrication - resolves, and lands in the drifted list."""
+    i0 = PROBE_DOC.index("The central bank")
+    i1 = PROBE_DOC.index("cent.") + 5
+    a = _doc_ent("inflation_target", "probe.md", PROBE_DOC[i0:i1],
+                 i0 + 7, i1 + 7)
+    report = compute_quality_report(
+        _build([a]), schema, resolve_anchors=True, doc_roots=[str(doc_root)])
+    assert report.gates_passed, report.failures
+    assert report.resolution["drifted"] and \
+        report.resolution["drifted"][0]["entity"] == "inflation_target"
+
+
+def test_non_grounding_grade_doc_anchor_is_skipped(schema, doc_root):
+    """document+passage with no offset does not count for is_grounded, so
+    the resolution pass does not check it either - the two stay aligned."""
+    a = Entity(name="weak", entity_type="state_variable",
+               doc_anchors=[DocAnchor(document="probe.md",
+                                      passage="The central bank")])
+    report = compute_quality_report(
+        _build([a]), schema, resolve_anchors=True, doc_roots=[str(doc_root)])
+    assert report.resolution["checked"] == 0

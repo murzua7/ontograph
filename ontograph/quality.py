@@ -121,14 +121,74 @@ def _groundedness(kg: KnowledgeGraph, validation: dict[str, Any]) -> dict[str, A
 # Citation anchors are counted but not checked; resolving them needs a
 # bibliography, which the gate does not have.
 
+def _find_document(name: str, doc_roots: list[Path]) -> Path | None:
+    p = Path(name)
+    if p.is_absolute() and p.is_file():
+        return p
+    for root in doc_roots:
+        cand = root / name
+        if cand.is_file():
+            return cand
+    return None
+
+
+def _resolve_doc(a, doc_roots: list[Path]) -> tuple[str | None, bool]:
+    """Resolve one document anchor. Returns (reason, drifted).
+
+    reason None means resolvable. Drifted means the passage is present in the
+    document but not at the recorded span, which resolves (the content
+    exists) and is reported, because span rot is metadata decay rather than
+    fabrication. Only anchors of grounding grade (a char offset or a line)
+    are ever passed here, matching what is_grounded credits.
+    """
+    doc = _find_document(a.document, doc_roots)
+    if doc is None:
+        return "document not found", False
+    try:
+        text = doc.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "document unreadable", False
+    if a.passage:
+        if 0 <= a.char_start <= a.char_end <= len(text) \
+                and text[a.char_start:a.char_end] == a.passage:
+            return None, False
+        if a.passage in text:
+            return None, True
+        return "passage not found in document", False
+    if a.char_start >= 0:
+        if a.char_end <= len(text):
+            return None, False
+        return f"span {a.char_start}-{a.char_end} out of range " \
+               f"(document has {len(text)} characters)", False
+    n_lines = text.count("\n") + 1
+    if a.line is not None and 1 <= a.line <= n_lines:
+        return None, False
+    return f"line {a.line} out of range (document has {n_lines} lines)", False
+
+
 def _resolution(kg: KnowledgeGraph,
-                anchor_roots: dict[str, str] | None) -> dict[str, Any]:
+                anchor_roots: dict[str, str] | None,
+                doc_roots: list[str] | None = None) -> dict[str, Any]:
     roots = {k: Path(v) for k, v in (anchor_roots or {}).items()}
+    droots = [Path(d) for d in (doc_roots or [])]
     checked = 0
     citation_unchecked = 0
+    drifted: list[dict[str, Any]] = []
     unresolvable: list[dict[str, Any]] = []
     for ent in kg.entities.values():
         citation_unchecked += len(ent.citation_anchors)
+        for a in getattr(ent, "doc_anchors", []):
+            if a.char_start < 0 and a.line is None:
+                continue  # not grounding-grade; is_grounded does not credit it
+            checked += 1
+            reason, drift = _resolve_doc(a, droots)
+            entry = {"entity": ent.name, "document": a.document,
+                     "char_start": a.char_start, "char_end": a.char_end,
+                     "line": a.line}
+            if reason is not None:
+                unresolvable.append(dict(entry, reason=reason))
+            elif drift:
+                drifted.append(entry)
         for a in ent.code_anchors:
             checked += 1
             reason = None
@@ -157,7 +217,7 @@ def _resolution(kg: KnowledgeGraph,
     resolved = checked - len(unresolvable)
     return {"enabled": True, "checked": checked, "resolved": resolved,
             "ratio": (resolved / checked) if checked else 1.0,
-            "unresolvable": unresolvable,
+            "unresolvable": unresolvable, "drifted": drifted,
             "citation_anchors_unchecked": citation_unchecked}
 
 
@@ -323,12 +383,17 @@ def compute_quality_report(
     coverage_threshold: float = _DEFAULT_COVERAGE_THRESHOLD,
     resolve_anchors: bool = False,
     anchor_roots: dict[str, str] | None = None,
+    doc_roots: list[str] | None = None,
 ) -> QualityReport:
     """Run all six metrics and decide gate pass/fail from schema.validation.
 
     `resolve_anchors` (default OFF, so existing callers are unaffected) adds
     the anchor-resolution pass: every code anchor must resolve against
-    `anchor_roots` (repo name -> filesystem root) or the gate fails."""
+    `anchor_roots` (repo name -> filesystem root), and every grounding-grade
+    document anchor must resolve against `doc_roots` (directories searched
+    for the anchor's document), or the gate fails. A passage found in its
+    document but not at the recorded span resolves and is reported as
+    drifted."""
     v = dict(schema.validation or {})
     report = QualityReport(
         coverage=_coverage(
@@ -341,7 +406,7 @@ def compute_quality_report(
         orphan_rate=_orphan_rate(kg),
         consistency=_consistency(kg),
         cycle_count=_cycle_count(kg),
-        resolution=_resolution(kg, anchor_roots) if resolve_anchors
+        resolution=_resolution(kg, anchor_roots, doc_roots) if resolve_anchors
         else {"enabled": False, "checked": 0},
     )
 
@@ -353,7 +418,7 @@ def compute_quality_report(
     if report.resolution.get("enabled") and report.resolution["unresolvable"]:
         failures.append(
             f"anchor_resolution: {len(report.resolution['unresolvable'])} "
-            "unresolvable code anchor(s)"
+            "unresolvable anchor(s)"
         )
 
     # Groundedness gate

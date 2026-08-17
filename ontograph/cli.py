@@ -693,6 +693,7 @@ def cmd_quality(args) -> int:
         kg, schema, ast_entities=ast_entities,
         resolve_anchors=getattr(args, "resolve_anchors", False),
         anchor_roots=anchor_roots or None,
+        doc_roots=getattr(args, "doc_root", None) or None,
     )
 
     out_path = Path(args.output) if getattr(args, "output", None) else kg_path.with_suffix(".quality.json")
@@ -1388,6 +1389,9 @@ def main():
                            help="Also RESOLVE every code anchor (file exists, line in "
                                 "range, symbol present); any unresolvable anchor fails "
                                 "the gate. Default off.")
+    p_quality.add_argument("--doc-root", action="append", metavar="PATH",
+                           help="Directory searched for document anchors' files under "
+                                "--resolve-anchors; repeatable.")
     p_quality.add_argument("--anchor-root", action="append", metavar="NAME=PATH",
                            help="Repo-name to filesystem-root mapping for --resolve-anchors; "
                                 "repeatable. Anchors whose repo has no mapping are "
