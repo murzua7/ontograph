@@ -234,3 +234,17 @@ validation:
   signedness_target: 0.7
   coverage_target: 0.85
   groundedness_target: 0.8
+  # Anchor agreement (metric 7). Two independent keys.
+  #
+  # `anchor_scorable_target` is deterministic: of the edges carrying a real
+  # sign, what fraction also carries a passage that a check could read. It
+  # measures whether the record supports checking at all, and it needs no
+  # judge. Set below the signedness target because an edge may legitimately
+  # be signed from a code anchor rather than from prose.
+  #
+  # `anchor_agreement_target` gates the judged result and is COMMENTED OUT
+  # until a judge is wired into the CLI. A threshold with no judge behind it
+  # is an untrained gate: it would read green on every graph while checking
+  # nothing. Uncomment it in the same change that supplies the judge.
+  anchor_scorable_target: 0.6
+  # anchor_agreement_target: 0.9

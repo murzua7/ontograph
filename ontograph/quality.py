@@ -56,6 +56,7 @@ class QualityReport:
     orphan_rate: dict[str, Any] = field(default_factory=dict)
     consistency: dict[str, Any] = field(default_factory=dict)
     cycle_count: dict[str, Any] = field(default_factory=dict)
+    anchor_agreement: dict[str, Any] = field(default_factory=dict)
     resolution: dict[str, Any] = field(default_factory=dict)
     gates_passed: bool = True
     failures: list[str] = field(default_factory=list)
@@ -69,6 +70,7 @@ class QualityReport:
                 "orphan_rate": self.orphan_rate,
                 "consistency": self.consistency,
                 "cycle_count": self.cycle_count,
+                "anchor_agreement": self.anchor_agreement,
                 "resolution": self.resolution,
                 "gates_passed": self.gates_passed,
                 "failures": list(self.failures),
@@ -261,6 +263,102 @@ def _signedness(kg: KnowledgeGraph) -> dict[str, Any]:
     }
 
 
+# ── Anchor agreement ────────────────────────────────────────────────────
+#
+# Groundedness asks whether an anchor EXISTS. It is entity-level and it is a
+# presence check. The semantic load of the graph sits on the edges — `sign`,
+# `lag`, `form` — and until this metric nothing asked whether the passage an
+# edge was drawn from actually asserts the sign the edge declares.
+#
+# The repo could already arbitrate a sign against its passage, but only for
+# edges something else nominated. `falsify` needs a SimulatorAdapter to find
+# suspicious edges; `reprompt` only touches edges already marked `unknown`.
+# An edge carrying a confident but wrong sign, in a graph with no simulator,
+# was never re-examined and never counted anywhere.
+#
+# Four states, deliberately not two:
+#   unscorable  no passage to read, so no check is possible. This is NOT a
+#               disagreement — absent is not failed.
+#   agree       the judge read the passage and it supports the sign.
+#   disagree    the judge read the passage and it contradicts the sign.
+#   undecided   the judge read the passage and could not tell.
+#
+# `undecided` is excluded from the agreement ratio rather than folded into
+# either side, so a judge that cannot tell can neither inflate nor deflate
+# the score. When nothing is decided the ratio is None, never 1.0.
+#
+# The judge is injected. quality.py takes no LLM dependency and stays
+# deterministic and testable; callers wanting a real judgment pass a callable
+# backed by `llm_client`, in the manner of `reprompt.py`.
+
+_JUDGE_VERDICTS = {"agree", "disagree", "undecided"}
+
+
+def _first_passage(rel: Relation) -> str | None:
+    """The first non-empty provenance passage on an edge, or None."""
+    for pr in rel.provenance or ():
+        passage = (getattr(pr, "passage", "") or "").strip()
+        if passage:
+            return passage
+    return None
+
+
+def _anchor_agreement(
+    kg: KnowledgeGraph,
+    sign_judge: Callable[[Relation, str], str] | None,
+) -> dict[str, Any]:
+    signed_total = 0
+    scorable = 0
+    unscorable = 0
+    agreed = disagreed = undecided = 0
+    disagreements: list[dict[str, Any]] = []
+
+    for rel in kg.relations:
+        if rel.edge_class != "mechanism":
+            continue
+        if rel.sign not in _SIGNED_VALUES:
+            continue          # extractor silence carries no claim to check
+        signed_total += 1
+        passage = _first_passage(rel)
+        if passage is None:
+            unscorable += 1
+            continue
+        scorable += 1
+        if sign_judge is None:
+            continue
+        verdict = sign_judge(rel, passage)
+        if verdict not in _JUDGE_VERDICTS:
+            raise ValueError(
+                f"sign_judge returned {verdict!r}; expected one of {sorted(_JUDGE_VERDICTS)}"
+            )
+        if verdict == "agree":
+            agreed += 1
+        elif verdict == "disagree":
+            disagreed += 1
+            disagreements.append({
+                "source": rel.source, "target": rel.target,
+                "relation_type": rel.relation_type, "sign": rel.sign,
+                "passage": passage,
+            })
+        else:
+            undecided += 1
+
+    decided = agreed + disagreed
+    return {
+        "signed_total": signed_total,
+        "scorable": scorable,
+        "unscorable_no_passage": unscorable,
+        "scorable_ratio": (scorable / signed_total) if signed_total else None,
+        "judged": sign_judge is not None,
+        "agreed": agreed,
+        "disagreed": disagreed,
+        "undecided": undecided,
+        "agreement_ratio": (agreed / decided) if decided else None,
+        "disagreements": disagreements,
+        "gate_evaluated": False,      # set by compute_quality_report
+    }
+
+
 # ── Coverage ────────────────────────────────────────────────────────────
 
 def _coverage(
@@ -384,6 +482,7 @@ def compute_quality_report(
     resolve_anchors: bool = False,
     anchor_roots: dict[str, str] | None = None,
     doc_roots: list[str] | None = None,
+    sign_judge: Callable[[Relation, str], str] | None = None,
 ) -> QualityReport:
     """Run all six metrics and decide gate pass/fail from schema.validation.
 
@@ -406,6 +505,7 @@ def compute_quality_report(
         orphan_rate=_orphan_rate(kg),
         consistency=_consistency(kg),
         cycle_count=_cycle_count(kg),
+        anchor_agreement=_anchor_agreement(kg, sign_judge),
         resolution=_resolution(kg, anchor_roots, doc_roots) if resolve_anchors
         else {"enabled": False, "checked": 0},
     )
@@ -445,6 +545,32 @@ def compute_quality_report(
             failures.append(
                 f"weighted_signedness {report.signedness['weighted_ratio']:.3f} "
                 f"< target {ws_target}"
+            )
+
+    # Anchor-scorable gate. Deterministic and independent of any judge: it
+    # asks whether the record could be checked at all, which is the same
+    # dependency the source paper names for its own module — a checker is
+    # only as good as the record it reads.
+    as_target = v.get("anchor_scorable_target")
+    as_ratio = report.anchor_agreement["scorable_ratio"]
+    if as_target is not None and as_ratio is not None:
+        if as_ratio < as_target:
+            failures.append(
+                f"anchor_scorable {as_ratio:.3f} < target {as_target}"
+            )
+
+    # Anchor-agreement gate. Fires ONLY when a judge actually ran and decided
+    # something. An unjudged graph must not pass a gate it never took: that
+    # is the untrained-gate failure, where absence of a reading is recorded
+    # as a passing reading.
+    aa_target = v.get("anchor_agreement_target")
+    aa_ratio = report.anchor_agreement["agreement_ratio"]
+    if aa_target is not None and report.anchor_agreement["judged"] and aa_ratio is not None:
+        report.anchor_agreement["gate_evaluated"] = True
+        if aa_ratio < aa_target:
+            failures.append(
+                f"anchor_agreement {aa_ratio:.3f} < target {aa_target} "
+                f"({report.anchor_agreement['disagreed']} edge(s) contradict their passage)"
             )
 
     # Coverage gate (skip if ratio is None — no AST input)

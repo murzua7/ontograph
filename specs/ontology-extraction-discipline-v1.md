@@ -332,6 +332,26 @@ Gate enforcement:
 - **Signedness** = `|mechanism edges with sign != "unknown"| / |mechanism edges|`.
 - **Orphan rate** = `|entities with no incident edges| / |entities|`. Excludes `abstract: true` nodes by default (pure-concept labels have no expected edges).
 - **Consistency** = `1 − |sign_conflicts| / |distinct_edges|`. Sign conflict defined as two relations with same `(source, target, relation_type)` and contradictory signs.
+- **Anchor agreement** (added 2026-08-28) has two parts. The deterministic
+  part is `|mechanism edges with a real sign AND a provenance passage| /
+  |mechanism edges with a real sign|`, reported as `scorable_ratio`; it says
+  whether the record could be checked at all and needs no judge. The judged
+  part takes an injected `sign_judge(relation, passage)` returning
+  `agree`/`disagree`/`undecided`, and reports `agreement_ratio` as
+  `agreed / (agreed + disagreed)`. `undecided` is excluded from the ratio
+  rather than folded into either side, and an edge with no passage counts as
+  `unscorable_no_passage`, which is not a disagreement. When nothing is
+  decided the ratio is `None`, never `1.0`. Gate keys are
+  `anchor_scorable_target` (deterministic) and `anchor_agreement_target`
+  (fires only when a judge ran and decided something, so an unjudged graph
+  cannot pass a gate it never took).
+
+  Motivation: groundedness is an entity-level presence check, while the
+  semantic load sits on edges. `falsify` can catch a wrong sign but requires
+  a `SimulatorAdapter`; `reprompt` only touches signs already `unknown`. A
+  confident wrong sign in a graph with no simulator was previously counted
+  by nothing. Source: [[literature/schmidgall-2026-execution-grounded-co-scientist]],
+  whose result-versus-methodological split is the same seam.
 - **Cycle count** is decomposed by `lag`: `within_step` cycles are reported (acyclicity within a step is typically expected), `across_step` cycles are reported and counted against `require_across_step_cycles` for dynamical-system schemas.
 
 ### 4.3 Simulator-in-the-loop falsifier (optional command)

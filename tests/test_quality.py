@@ -496,3 +496,124 @@ class TestGateIntegration:
         assert "cycle_count" in payload
         assert "gates_passed" in payload
         assert "failures" in payload
+
+
+# ── Anchor agreement (metric 7) ─────────────────────────────────────────
+#
+# Groundedness asks whether an anchor EXISTS. It is an entity-level presence
+# check, and the semantic load of the graph sits on the edges: sign, lag and
+# form. Nothing counted whether the passage an edge was drawn from actually
+# asserts the sign the edge declares.
+#
+# The repo can already arbitrate a sign against its passage, but only for
+# edges something else nominated: `falsify` needs a SimulatorAdapter to find
+# suspicious edges, and `reprompt` only touches edges whose sign is already
+# `unknown`. A confidently wrong sign on a graph with no simulator is never
+# re-examined and never counted. That is what this metric counts.
+#
+# Four states, not two. An edge with no passage is UNSCORABLE, which is not
+# the same as a disagreement: absent is not failed. The judged states are
+# agree / disagree / undecided, and `undecided` exists so a judge that cannot
+# tell does not silently join either side.
+
+def _rel_with(passage: str | None, sign: str, **kw):
+    from ontograph.models import Provenance, Relation
+    prov = [Provenance(document="d", passage=passage)] if passage is not None else []
+    return Relation(source=kw.pop("source", "A"), target=kw.pop("target", "B"),
+                    relation_type="feeds_into", sign=sign,
+                    edge_class="mechanism", provenance=prov, **kw)
+
+
+def _ents(*names):
+    from ontograph.models import Entity
+    return [Entity(name=n, entity_type="state_variable", abstract=True) for n in names]
+
+
+class TestAnchorAgreement:
+
+    def test_scorable_population_is_deterministic_and_needs_no_judge(self, tmp_path):
+        """With no judge, the metric still reports what COULD be checked."""
+        from ontograph.quality import compute_quality_report
+        kg = _kg(_ents("A", "B", "C", "D"), [
+            _rel_with("A raises B.", "+"),                      # scorable
+            _rel_with(None, "-", source="C", target="D"),       # no passage
+        ])
+        r = compute_quality_report(kg, _schema(tmp_path))
+        aa = r.anchor_agreement
+        assert aa["signed_total"] == 2
+        assert aa["scorable"] == 1
+        assert aa["unscorable_no_passage"] == 1
+        assert aa["scorable_ratio"] == pytest.approx(0.5)
+        assert aa["judged"] is False
+
+    def test_unknown_sign_is_not_in_the_scorable_population(self, tmp_path):
+        """`unknown` is extractor silence; there is no claim to disagree with."""
+        from ontograph.quality import compute_quality_report
+        kg = _kg(_ents("A", "B"), [_rel_with("A does something to B.", "unknown")])
+        aa = compute_quality_report(kg, _schema(tmp_path)).anchor_agreement
+        assert aa["signed_total"] == 0
+        assert aa["scorable"] == 0
+        assert aa["scorable_ratio"] is None      # nothing to take a ratio of
+
+    def test_judge_splits_agree_disagree_undecided(self, tmp_path):
+        """The failure this exists to catch: a sign contradicting its passage."""
+        from ontograph.quality import compute_quality_report
+        kg = _kg(_ents("A", "B", "C", "D", "E", "F"), [
+            _rel_with("A unambiguously depresses B.", "+"),              # wrong
+            _rel_with("C raises D.", "+", source="C", target="D"),       # right
+            _rel_with("E relates to F.", "-", source="E", target="F"),   # unclear
+        ])
+        def judge(rel, passage):
+            if "depresses" in passage:
+                return "disagree"
+            if "raises" in passage:
+                return "agree"
+            return "undecided"
+        aa = compute_quality_report(kg, _schema(tmp_path), sign_judge=judge).anchor_agreement
+        assert aa["judged"] is True
+        assert (aa["agreed"], aa["disagreed"], aa["undecided"]) == (1, 1, 1)
+        assert aa["agreement_ratio"] == pytest.approx(0.5)   # 1 agree / 2 decided
+        assert aa["disagreements"][0]["source"] == "A"
+        assert aa["disagreements"][0]["sign"] == "+"
+
+    def test_undecided_is_excluded_from_the_ratio_not_counted_as_agreement(self, tmp_path):
+        """A judge that cannot tell must not inflate the score."""
+        from ontograph.quality import compute_quality_report
+        kg = _kg(_ents("A", "B"), [_rel_with("A relates to B.", "+")])
+        aa = compute_quality_report(kg, _schema(tmp_path),
+                                    sign_judge=lambda r, p: "undecided").anchor_agreement
+        assert aa["undecided"] == 1
+        assert aa["agreement_ratio"] is None     # nothing was decided
+
+    def test_gate_fires_only_when_the_judge_ran(self, tmp_path):
+        """An unjudged graph must not pass a gate it never took."""
+        from ontograph.quality import compute_quality_report
+        kg = _kg(_ents("A", "B"), [_rel_with("A unambiguously depresses B.", "+")])
+        v = {"anchor_agreement_target": 0.9}
+        # No judge: the gate cannot be evaluated, so it must not pass silently.
+        r1 = compute_quality_report(kg, _schema(tmp_path, v))
+        assert not any("anchor_agreement" in f for f in r1.failures)
+        assert r1.anchor_agreement["gate_evaluated"] is False
+        # Judge present and disagreeing: the gate fails.
+        r2 = compute_quality_report(kg, _schema(tmp_path, v),
+                                    sign_judge=lambda rel, p: "disagree")
+        assert any("anchor_agreement" in f for f in r2.failures)
+        assert not r2.gates_passed
+
+    def test_scorable_gate_is_independent_of_the_judge(self, tmp_path):
+        """You can require a checkable record without judging it."""
+        from ontograph.quality import compute_quality_report
+        kg = _kg(_ents("A", "B", "C", "D"), [
+            _rel_with("A raises B.", "+"),
+            _rel_with(None, "-", source="C", target="D"),
+        ])
+        r = compute_quality_report(kg, _schema(tmp_path, {"anchor_scorable_target": 0.75}))
+        assert any("anchor_scorable" in f for f in r.failures)   # 0.5 < 0.75
+
+    def test_metric_appears_in_the_serialised_report(self, tmp_path):
+        import json
+        from ontograph.quality import compute_quality_report
+        kg = _kg(_ents("A", "B"), [_rel_with("A raises B.", "+")])
+        d = json.loads(compute_quality_report(kg, _schema(tmp_path)).to_json())
+        assert "anchor_agreement" in d
+        assert d["anchor_agreement"]["scorable"] == 1
