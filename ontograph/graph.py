@@ -14,7 +14,10 @@ class OntologyGraph:
     """Interactive ontology graph backed by NetworkX."""
 
     def __init__(self, schema: OntologySchema | None = None):
-        self.g = nx.DiGraph()
+        # MultiDiGraph: same (source, target) pair may carry several typed
+        # relations (e.g. A -causes-> B and A -feeds_into-> B). A DiGraph
+        # silently collapses those to one edge and undercounts relations.
+        self.g = nx.MultiDiGraph()
         self.schema = schema
         self._entities: dict[str, Entity] = {}
 

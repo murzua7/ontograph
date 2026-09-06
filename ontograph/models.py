@@ -152,8 +152,9 @@ class KnowledgeGraph:
     def add_entity(self, entity: Entity) -> None:
         if entity.name in self.entities:
             existing = self.entities[entity.name]
-            existing.aliases = list(set(existing.aliases + entity.aliases))
-            existing.observations = list(set(existing.observations + entity.observations))
+            # sorted(): set iteration order is hash-randomized across runs.
+            existing.aliases = sorted(set(existing.aliases + entity.aliases))
+            existing.observations = sorted(set(existing.observations + entity.observations))
             existing.provenance.extend(entity.provenance)
             # Merge anchors by identity tuple to avoid duplicates.
             existing_codes = {(a.repo, a.path, a.line, a.symbol) for a in existing.code_anchors}

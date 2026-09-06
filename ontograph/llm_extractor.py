@@ -421,8 +421,8 @@ def _dedup_entities(entities: list[Entity]) -> list[Entity]:
         key = e.name.lower()
         if key in merged:
             existing = merged[key]
-            existing.aliases = list(set(existing.aliases + e.aliases))
-            existing.observations = list(set(existing.observations + e.observations))
+            existing.aliases = sorted(set(existing.aliases + e.aliases))
+            existing.observations = sorted(set(existing.observations + e.observations))
             existing.provenance.extend(e.provenance)
             # Dedupe doc_anchors by (document, char_start, char_end, line)
             seen = {(d.document, d.char_start, d.char_end, d.line)
