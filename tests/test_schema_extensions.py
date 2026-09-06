@@ -392,3 +392,81 @@ class TestExtractionHintsPreservation:
         s = load_schema(str(p))
         assert s.extraction_hints["entity_signals"] == ["phase N:"]
         assert s.extraction_hints["custom_kind"] == ["alpha", "beta"]
+
+
+# ── 2026-09-06: supply-chain shock subtype and identifying restrictions ──
+#
+# Added from the deep read of Bai, Fernandez-Villaverde, Li and Zanetti 2025
+# (knowledge-vault wiki/literature/bai-2025-global-supply-chain-disruptions).
+# The paper separates a supply-chain shock from a capacity shock by the
+# opposite signs of spare capacity and tightness, and it names two bases for
+# an identifying restriction: derived from a model, or from institutional
+# timing. The schemas carried neither distinction before this date.
+
+class TestSupplyChainAndIdentifyingRestriction:
+    def test_economics_shock_has_supply_chain_subtype(self):
+        from ontograph.schema import load_schema
+        s = load_schema("economics")
+        assert "supply_chain" in s.entity_types["shock"].subtypes
+        # The pre-existing subtypes survive; the addition is additive.
+        for old in ("demand", "supply", "financial", "policy", "geopolitical"):
+            assert old in s.entity_types["shock"].subtypes
+
+    def test_economics_constraint_has_identifying_restriction(self):
+        from ontograph.schema import load_schema
+        s = load_schema("economics")
+        assert "identifying_restriction" in s.entity_types["constraint"].subtypes
+
+    def test_dabs_constraint_override_carries_identifying_restriction(self):
+        """dabs.yaml overrides `constraint` wholesale (no deep merge of
+        subtypes), so the subtype must be present there as well or the DABS
+        schema silently loses it."""
+        from ontograph.schema import load_schema
+        s = load_schema("dabs")
+        assert "identifying_restriction" in s.entity_types["constraint"].subtypes
+        assert "assertion" in s.entity_types["constraint"].subtypes
+
+    def test_dabs_evidence_basis_carries_both_restriction_bases(self):
+        from ontograph.schema import load_schema
+        s = load_schema("dabs")
+        bases = s.entity_types["evidence_basis"].subtypes
+        assert "theory_derived" in bases
+        assert "institutional_timing" in bases
+
+    def test_dabs_inherits_supply_chain_shock(self):
+        """dabs.yaml does not override `shock`, so the subtype must arrive by
+        inheritance from economics.yaml."""
+        from ontograph.schema import load_schema
+        s = load_schema("dabs")
+        assert "supply_chain" in s.entity_types["shock"].subtypes
+
+    def test_simulator_channel_names_against_shock_subtypes(self):
+        """The simulator's six shock channels (dabs/shocks/vector_shock.py in
+        DiffMABM, copied here so this suite stays free of that dependency)
+        against the ontology's shock subtypes. `external` and `systemic` have
+        no counterpart, and the test pins that gap as a known fact rather
+        than letting it drift: if someone adds a counterpart, update the
+        expected set here on purpose."""
+        from ontograph.schema import load_schema
+        s = load_schema("economics")
+        subtypes = set(s.entity_types["shock"].subtypes)
+        channels = ("monetary", "demand", "supply", "financial", "external", "systemic")
+        mapping = {"monetary": "policy", "demand": "demand", "supply": "supply",
+                   "financial": "financial"}
+        for ch, target in mapping.items():
+            assert target in subtypes, (ch, target)
+        without = {ch for ch in channels if ch not in mapping}
+        assert without == {"external", "systemic"}
+
+    def test_identifying_restriction_implements_identification_strategy(self):
+        """Reconciliation of 2026-09-06: a restriction (constraint subtype)
+        implements a strategy (its own entity type); it is never the source
+        of `identifies`, which stays with the strategy."""
+        from ontograph.schema import load_schema
+        s = load_schema("economics")
+        assert "identification_strategy" in s.entity_types
+        impl = s.relation_types["implements"]
+        assert "constraint" in impl.domain
+        assert "identification_strategy" in impl.range
+        ident = s.relation_types["identifies"]
+        assert "constraint" not in ident.domain

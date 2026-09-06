@@ -20,8 +20,15 @@ entity_types:
     subtypes: [goods, labour, credit, housing, bond, forex, interbank]
     color: "#9C27B0"
   constraint:
-    description: "Invariant, accounting identity, or regulatory bound"
-    subtypes: [accounting_identity, regulatory, budget, equilibrium, solvency]
+    description: >
+      Invariant, accounting identity, regulatory bound, or identifying
+      restriction. An identifying_restriction is a stated condition an
+      estimator imposes so that a residual can be read as a named shock (a
+      sign, a zero, a timing), and its basis is either theory_derived (from a
+      model's comparative statics) or institutional_timing (from knowledge of
+      when a quantity can and cannot respond); record the basis in the entity's
+      evidence, since the two fail differently.
+    subtypes: [accounting_identity, regulatory, budget, equilibrium, solvency, identifying_restriction]
     color: "#F44336"
   parameter:
     description: "Fixed or calibrated coefficient"
@@ -31,8 +38,14 @@ entity_types:
     subtypes: [dsge, abm, network, bayesian, complexity]
     color: "#795548"
   shock:
-    description: "Exogenous disturbance or stress scenario"
-    subtypes: [demand, supply, financial, policy, geopolitical]
+    description: >
+      Exogenous disturbance or stress scenario. A supply_chain shock is a
+      disturbance to the cost or capacity of moving goods between producers
+      and buyers, told apart from a supply (capacity) shock by the opposite
+      signs of spare capacity and market tightness: a supply-chain shock idles
+      upstream capacity while shortages appear downstream, a capacity shock
+      does the reverse (Bai, Fernandez-Villaverde, Li and Zanetti 2025).
+    subtypes: [demand, supply, supply_chain, financial, policy, geopolitical]
     color: "#E91E63"
   identification_strategy:
     description: >
@@ -71,9 +84,17 @@ relation_types:
     domain: [state_variable]
     range: [mechanism, theory, concept]
   implements:
-    description: "Agent or mechanism implements a theory"
-    domain: [agent, mechanism]
-    range: [theory]
+    description: >
+      Agent or mechanism implements a theory; or a constraint of subtype
+      identifying_restriction implements an identification_strategy. A
+      restriction (a sign, a zero, a timing) is one condition an estimator
+      imposes and a strategy is the set of them plus the estimator, so one
+      restriction can implement several strategies. A restriction is never
+      the source of `identifies`: it implements a strategy, and the strategy
+      identifies the shock or parameter (reconciled 2026-09-06 between the
+      two sessions that added the two types).
+    domain: [agent, mechanism, constraint]
+    range: [theory, identification_strategy]
   parameterized_by:
     description: "Entity behavior depends on parameter value"
     domain: [mechanism, agent]

@@ -23,7 +23,7 @@ entity_types:
     color: "#FF9800"
   constraint:
     description: "Invariant, accounting identity, regulatory bound, or run-time assertion"
-    subtypes: [accounting_identity, regulatory, budget, equilibrium, solvency, assertion]
+    subtypes: [accounting_identity, regulatory, budget, equilibrium, solvency, assertion, identifying_restriction]
     color: "#F44336"
   parameter:
     description: >
@@ -52,7 +52,7 @@ entity_types:
       fitted to reproduce an aggregate target, stipulated with no source, or set
       as a modelling choice has a basis but no provider, and before this type
       existed such a parameter could carry no provenance edge at all.
-    subtypes: [direct_measurement, literature_estimate, field_estimate, calibration, model_design, assumed]
+    subtypes: [direct_measurement, literature_estimate, field_estimate, calibration, model_design, assumed, theory_derived, institutional_timing]
     color: "#7E57C2"
   bug_fix:
     description: "Historical correction to a mechanism; records a code-change event tied to a known pathology (phantom-bias, inventory residual, consumption scale)"
