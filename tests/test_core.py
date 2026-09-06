@@ -79,6 +79,25 @@ class TestSchema:
         assert len(s.extraction_hints["entity_signals"]) > 0
         assert len(s.extraction_hints["relation_signals"]) > 0
 
+    def test_identification_strategy_type(self):
+        """Added 2026-09-06: the economics schema types an identification
+        strategy as its own entity, with an `identifies` relation whose domain is
+        that type only. Before this, stored graphs held seven such nodes typed as
+        mechanism, parameter or constraint."""
+        from ontograph.schema import load_schema
+        s = load_schema("economics")
+        assert "identification_strategy" in s.entity_types
+        assert "instrument" in s.entity_types["identification_strategy"].subtypes
+        assert "identifies" in s.relation_types
+        assert s.validate_relation("identification_strategy", "identifies", "shock")
+        assert not s.validate_relation("mechanism", "identifies", "shock")
+
+    def test_dabs_schema_inherits_identification_strategy(self):
+        from ontograph.schema import load_schema
+        s = load_schema("dabs")
+        assert "identification_strategy" in s.entity_types
+        assert "identifies" in s.relation_types
+
     def test_missing_schema_raises(self):
         from ontograph.schema import load_schema
         with pytest.raises(FileNotFoundError):

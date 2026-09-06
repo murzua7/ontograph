@@ -34,6 +34,19 @@ entity_types:
     description: "Exogenous disturbance or stress scenario"
     subtypes: [demand, supply, financial, policy, geopolitical]
     color: "#E91E63"
+  identification_strategy:
+    description: >
+      How an empirical paper recovers a causal quantity from observed data: the
+      assumption, instrument, timing restriction or experimental design that makes
+      an effect identifiable. Distinct from a mechanism (a process in the economy)
+      and from a constraint (an identity or bound the economy obeys). Examples:
+      structural VAR identification, recursive ordering, high-frequency window
+      around announcements, an instrument such as other-country imports, weak
+      identification as a diagnosed failure. Added 2026-09-06 after the stored
+      graphs were found to hold seven such nodes typed as mechanism, parameter or
+      constraint because nothing else fitted.
+    subtypes: [structural_var, recursive_ordering, high_frequency, instrument, natural_experiment, difference_in_differences, regression_discontinuity, sign_restriction, weak_identification]
+    color: "#00897B"
 
 relation_types:
   feeds_into:
@@ -91,6 +104,14 @@ relation_types:
     description: "Source amplifies the effect of target"
   dampens:
     description: "Source reduces the effect of target"
+  identifies:
+    description: >
+      An identification strategy recovers a causal effect of a shock or mechanism
+      on a state variable, or licenses a parameter estimate. The edge says how the
+      paper's causal claim was earned, not what the economy does.
+    domain: [identification_strategy]
+    range: [shock, mechanism, parameter, state_variable]
+    default_edge_class: "evidence"
 
 extraction_hints:
   entity_signals:
@@ -105,6 +126,10 @@ extraction_hints:
     - "X identity"
     - "X parameter"
     - "X shock"
+    - "identification of X"
+    - "we identify X using Y"
+    - "X instrument"
+    - "instrumented by"
   relation_signals:
     - "X affects Y"
     - "X feeds into Y"
@@ -122,3 +147,5 @@ extraction_hints:
     - "under X, Y no longer applies"
     - "X is replaced by Y"
     - "X sets the parameter Y"
+    - "X identifies Y"
+    - "Y is identified by X"
